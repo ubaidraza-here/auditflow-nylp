@@ -20,6 +20,7 @@ from app.models.invoice_schemas import (
     LineItemComparison,
     DisputeEmailDraft,
     DecisionRequest,
+    AnalyzeRequest,
     InvoiceAuditRecord,
 )
 
@@ -34,6 +35,7 @@ __all__ = [
     "LineItemComparison",
     "DisputeEmailDraft",
     "DecisionRequest",
+    "AnalyzeRequest",
     "InvoiceAuditRecord",
     "PurchaseOrderLine",
     "PurchaseOrderRecord",

@@ -80,6 +80,10 @@ class DecisionRequest(BaseModel):
     dispute_email_body: Optional[str] = None
 
 
+class AnalyzeRequest(BaseModel):
+    demo_scenario_id: Optional[str] = None
+
+
 class InvoiceAuditRecord(BaseModel):
     id: str
     invoice_number: str
