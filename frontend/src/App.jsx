@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import AppShell from './components/layout/AppShell';
 import QuickAuditModal from './components/layout/QuickAuditModal';
 import DashboardPage from './pages/DashboardPage';
+import WorkbenchPage from './pages/WorkbenchPage';
 
 export default function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
@@ -41,25 +42,11 @@ export default function App() {
       )}
 
       {activeTab === 'workbench' && (
-        <div className="max-w-7xl mx-auto px-6 py-12 text-center">
-          <div className="bg-white border border-[#E2E8F0] rounded-[6px] p-12 max-w-lg mx-auto shadow-xs">
-            <div className="w-10 h-10 bg-[#0A2540] text-white font-mono font-bold rounded flex items-center justify-center mx-auto mb-4">
-              02
-            </div>
-            <h2 className="text-lg font-bold text-[#0A2540] mb-2">
-              Forensic Workbench
-            </h2>
-            <p className="text-xs text-[#64748B] mb-4">
-              Ready for Segment 2 execution. Active Target Case: <strong className="font-mono text-[#0A2540]">{selectedInvoiceId}</strong>.
-            </p>
-            <button
-              onClick={() => setActiveTab('dashboard')}
-              className="text-xs font-semibold text-[#0A2540] hover:text-[#1E3A5F] underline"
-            >
-              ← Return to Executive Triage Ledger
-            </button>
-          </div>
-        </div>
+        <WorkbenchPage
+          invoiceId={selectedInvoiceId}
+          onBack={() => setActiveTab('dashboard')}
+          onNavigateAuditTrail={() => setActiveTab('audit-logs')}
+        />
       )}
 
       {activeTab === 'upload' && (
