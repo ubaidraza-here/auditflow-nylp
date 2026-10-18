@@ -6,16 +6,58 @@ import {
   getInitialMockInvoices,
 } from './mockData.js';
 
-const API_BASE_URL = 'http://localhost:5000/api';
+function normalizeApiBaseUrl(raw) {
+  if (!raw || typeof raw !== 'string' || !raw.trim()) {
+    return 'http://localhost:5000/api';
+  }
+  const clean = raw.trim().replace(/\/+$/, '');
+  return clean.endsWith('/api') ? clean : `${clean}/api`;
+}
 
-let localInvoices = [...MOCK_INVOICES];
+const API_BASE_URL = normalizeApiBaseUrl(import.meta.env.VITE_API_BASE_URL);
+
+function getSessionInvoices() {
+  try {
+    const s = sessionStorage.getItem('auditflow_live_invoices');
+    if (s) {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return [...MOCK_INVOICES];
+}
+
+function setSessionInvoices(invoices) {
+  try {
+    sessionStorage.setItem('auditflow_live_invoices', JSON.stringify(invoices));
+  } catch {}
+}
+
+function getSessionLogs() {
+  try {
+    const s = sessionStorage.getItem('auditflow_live_audit_logs');
+    if (s) {
+      const parsed = JSON.parse(s);
+      if (Array.isArray(parsed) && parsed.length > 0) return parsed;
+    }
+  } catch {}
+  return [...MOCK_AUDIT_LOGS];
+}
+
+function setSessionLogs(logs) {
+  try {
+    sessionStorage.setItem('auditflow_live_audit_logs', JSON.stringify(logs));
+  } catch {}
+}
+
+let localInvoices = getSessionInvoices();
 let localKpis = { ...MOCK_KPIS };
-let localLogs = [...MOCK_AUDIT_LOGS];
+let localLogs = getSessionLogs();
 
 async function request(endpoint, options = {}, fallbackData) {
   try {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
     const res = await fetch(`${API_BASE_URL}${endpoint}`, {
       ...options,
       headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
@@ -30,6 +72,8 @@ async function request(endpoint, options = {}, fallbackData) {
 }
 
 export const apiClient = {
+  API_BASE_URL,
+
   async computeFileSha256(file) {
     try {
       const buffer = await file.arrayBuffer();
@@ -46,10 +90,11 @@ export const apiClient = {
     const sha256 = await this.computeFileSha256(file);
     const formData = new FormData();
     formData.append('file', file);
+    formData.append('client_sha256', sha256);
 
     try {
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      const timeoutId = setTimeout(() => controller.abort(), 60000);
       const res = await fetch(`${API_BASE_URL}/invoices/analyze`, {
         method: 'POST',
         body: formData,
@@ -59,14 +104,17 @@ export const apiClient = {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const data = await res.json();
       const invoice = data.invoice || data;
-      if (invoice?.invoice_id) {
-        const idx = localInvoices.findIndex((i) => i.invoice_id === invoice.invoice_id);
+      if (invoice?.invoice_id || invoice?.id) {
+        invoice.file_hash_sha256 = invoice.file_hash_sha256 || sha256;
+        const targetId = invoice.invoice_id || invoice.id;
+        const idx = localInvoices.findIndex((i) => (i.invoice_id || i.id) === targetId);
         if (idx !== -1) localInvoices[idx] = invoice;
         else localInvoices = [invoice, ...localInvoices];
+        setSessionInvoices(localInvoices);
       }
-      return { success: true, invoice, sha256 };
+      return { success: true, invoice, sha256, stage_telemetry: data.stage_telemetry };
     } catch (err) {
-      console.warn('Live API upload failed, falling back to simulation:', err);
+      console.warn('Live API upload failed, falling back to simulation and sessionStorage:', err);
       return this._simulateFileUpload(file, sha256);
     }
   },
@@ -88,7 +136,7 @@ export const apiClient = {
     newInv.invoice_id = `inv_${Date.now()}`;
     newInv.file_name = file.name;
     newInv.file_hash_sha256 = sha256;
-    newInv.file_url = URL.createObjectURL(file);
+    try { newInv.file_url = URL.createObjectURL(file); } catch {}
     newInv.extraction_mode = 'FALLBACK_SIMULATION';
     delete newInv.decision_metadata;
 
@@ -108,14 +156,41 @@ export const apiClient = {
     }
 
     localInvoices = [newInv, ...localInvoices];
+    setSessionInvoices(localInvoices);
     return { success: true, invoice: newInv, sha256 };
   },
 
   async getDashboardSummary() {
-    return request('/dashboard/summary', {}, () => ({
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(`${API_BASE_URL}/dashboard/summary`, {
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const liveData = await res.json();
+        if (liveData && (liveData.invoices || liveData.kpis)) {
+          if (Array.isArray(liveData.invoices) && liveData.invoices.length > 0) {
+            localInvoices = liveData.invoices;
+            setSessionInvoices(localInvoices);
+          }
+          if (liveData.kpis) {
+            localKpis = liveData.kpis;
+          }
+          return liveData;
+        }
+      }
+    } catch (err) {
+      console.warn('Live getDashboardSummary failed, falling back to sessionStorage:', err);
+    }
+
+    const cached = getSessionInvoices();
+    return {
       kpis: { ...localKpis },
-      invoices: [...localInvoices],
-    }));
+      invoices: cached.length > 0 ? cached : [...localInvoices],
+    };
   },
 
   async getPurchaseOrders() {
@@ -123,47 +198,86 @@ export const apiClient = {
   },
 
   async getAuditLogs() {
-    return request('/audit-logs', {}, () => [...localLogs]);
+    return request('/audit-logs', {}, () => getSessionLogs());
   },
 
   async getInvoiceById(id) {
-    return request(`/invoices/${id}`, {}, () => {
-      const match = localInvoices.find((i) => i.invoice_id === id || i.invoice_number === id);
-      return match || localInvoices.find((i) => i.invoice_id === 'inv_1002') || localInvoices[0];
-    });
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 10000);
+      const res = await fetch(`${API_BASE_URL}/invoices/${id}`, {
+        signal: controller.signal,
+        headers: { 'Content-Type': 'application/json' },
+      });
+      clearTimeout(timeoutId);
+      if (res.ok) {
+        const liveInvoice = await res.json();
+        if (liveInvoice) {
+          const inv = liveInvoice.invoice || liveInvoice;
+          const targetId = inv.invoice_id || inv.id;
+          if (targetId) {
+            const idx = localInvoices.findIndex((i) => (i.invoice_id || i.id) === targetId);
+            if (idx !== -1) localInvoices[idx] = inv;
+            else localInvoices = [inv, ...localInvoices];
+            setSessionInvoices(localInvoices);
+          }
+          return inv;
+        }
+      }
+    } catch (err) {
+      console.warn(`Live getInvoiceById(${id}) failed, falling back to sessionStorage:`, err);
+    }
+
+    const cached = getSessionInvoices();
+    const match = cached.find((i) => i.invoice_id === id || i.invoice_number === id || i.id === id);
+    return match || localInvoices.find((i) => i.invoice_id === id || i.invoice_number === id || i.id === id) || cached[0] || localInvoices[0];
   },
 
-  async submitDecision(invoiceId, { decision, reviewer_name, justification_notes }) {
+  async getInvoice(id) {
+    return this.getInvoiceById(id);
+  },
+
+  async submitDecision(invoiceId, { decision, reviewer_name, justification_notes, override_reason, dispute_email_body }) {
+    const notes = justification_notes || override_reason || dispute_email_body;
     return request(
       `/invoices/${invoiceId}/decision`,
-      { method: 'POST', body: JSON.stringify({ decision, reviewer_name, justification_notes }) },
+      { method: 'POST', body: JSON.stringify({ decision, reviewer_name, justification_notes: notes, override_reason, dispute_email_body }) },
       () => {
-        const existing = localInvoices.find((i) => i.invoice_id === invoiceId || i.invoice_number === invoiceId);
+        const existing = localInvoices.find((i) => (i.invoice_id || i.id) === invoiceId || i.invoice_number === invoiceId);
         if (!existing) return { success: false };
         let nextStatus = 'APPROVED_CLEAN';
         if (decision === 'REJECT_DISPUTE') nextStatus = 'REJECTED_DISPUTED';
         else if (decision === 'APPROVE_WITH_OVERRIDE') nextStatus = 'APPROVED_WITH_OVERRIDE';
         const timestamp = new Date().toISOString();
         const reviewer = reviewer_name || 'Ubaid Raza (Senior AP Auditor)';
-        const notes = justification_notes || 'Approved/disputed by compliance auditor.';
         const updated = {
           ...existing,
           status: nextStatus,
+          reviewer_name: reviewer,
+          reviewed_at: timestamp,
+          override_reason: override_reason || notes,
+          dispute_memo: dispute_email_body,
           decision_metadata: { timestamp, reviewer_name: reviewer, justification_notes: notes, decision_type: decision },
         };
-        localInvoices = localInvoices.map((inv) => (inv.invoice_id === existing.invoice_id ? updated : inv));
-        return { success: true, invoice_id: updated.invoice_id, new_status: nextStatus, updated_invoice: updated };
+        localInvoices = localInvoices.map((inv) => ((inv.invoice_id || inv.id) === (existing.invoice_id || existing.id) ? updated : inv));
+        setSessionInvoices(localInvoices);
+        return { success: true, invoice_id: updated.invoice_id || updated.id, new_status: nextStatus, updated_invoice: updated };
       }
     );
   },
 
   async resetInvoiceState(invoiceId) {
     const blueprint = getInitialMockInvoices();
-    const original = blueprint.find((i) => i.invoice_id === invoiceId || i.invoice_number === invoiceId) || blueprint[0];
+    const original = blueprint.find((i) => (i.invoice_id || i.id) === invoiceId || i.invoice_number === invoiceId) || blueprint[0];
     const fresh = JSON.parse(JSON.stringify(original));
     delete fresh.decision_metadata;
-    localInvoices = localInvoices.map((inv) => (inv.invoice_id === fresh.invoice_id ? fresh : inv));
+    localInvoices = localInvoices.map((inv) => ((inv.invoice_id || inv.id) === (fresh.invoice_id || fresh.id) ? fresh : inv));
+    setSessionInvoices(localInvoices);
     return fresh;
+  },
+
+  async resetInvoice(invoiceId) {
+    return this.resetInvoiceState(invoiceId);
   },
 
   async triggerDemoScenario(scenarioId) {
@@ -177,20 +291,38 @@ export const apiClient = {
         else if (scenarioId === 'SCENARIO_C_DUPLICATE') targetNum = 'INV-7710-REV';
         const fresh = JSON.parse(JSON.stringify(blueprint.find((i) => i.invoice_number === targetNum) || blueprint[0]));
         delete fresh.decision_metadata;
-        const idx = localInvoices.findIndex((i) => i.invoice_id === fresh.invoice_id);
+        const targetId = fresh.invoice_id || fresh.id;
+        const idx = localInvoices.findIndex((i) => (i.invoice_id || i.id) === targetId);
         if (idx !== -1) localInvoices[idx] = fresh;
         else localInvoices = [fresh, ...localInvoices];
+        setSessionInvoices(localInvoices);
         return { success: true, invoice: fresh };
       }
     );
   },
 
+  async analyzeDemoScenario(scenarioId) {
+    return this.triggerDemoScenario(scenarioId);
+  },
+
   async resetAll() {
+    try { sessionStorage.removeItem('auditflow_live_invoices'); } catch {}
+    try { sessionStorage.removeItem('auditflow_live_audit_logs'); } catch {}
     return request('/invoices/reset', { method: 'POST' }, () => {
       localInvoices = getInitialMockInvoices();
       localKpis = { ...MOCK_KPIS };
       localLogs = [...MOCK_AUDIT_LOGS];
+      setSessionInvoices(localInvoices);
+      setSessionLogs(localLogs);
       return { success: true, message: 'All demo invoices and audit logs reset.' };
     });
+  },
+
+  async resetLedger() {
+    return this.resetAll();
+  },
+
+  async resetAllDemoData() {
+    return this.resetAll();
   },
 };
