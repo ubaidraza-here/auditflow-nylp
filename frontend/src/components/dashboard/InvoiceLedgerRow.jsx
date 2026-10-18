@@ -1,13 +1,10 @@
 import React from 'react';
 
 export default function InvoiceLedgerRow({ invoice, isSelected, onToggleSelect, onInspect }) {
-  const isAnomaly = invoice.status === 'EXCEPTION_FLAGGED' || invoice.status === 'REJECTED_DISPUTED';
-  const isClean = invoice.status === 'VERIFIED_MATCH';
-  const isArchive = invoice.status === 'APPROVED_CLEAN' || invoice.status === 'APPROVED_WITH_OVERRIDE';
-
-  let borderStripe = 'border-l-[3px] border-l-[#E2E8F0]';
-  if (isAnomaly) borderStripe = 'border-l-[3px] border-l-[#9F1239]';
-  else if (isClean) borderStripe = 'border-l-[3px] border-l-[#059669]';
+  const isUnresolvedFlagged = ['EXCEPTION_FLAGGED', 'NEEDS_REVIEW', 'FLAGGED'].includes(invoice.status);
+  const isClean = ['VERIFIED_MATCH', 'MATCHED_APPROVED', 'APPROVED', 'AUTO_APPROVED'].includes(invoice.status);
+  const isArchive = ['APPROVED_CLEAN', 'APPROVED_WITH_OVERRIDE', 'REJECTED_DISPUTED', 'REJECTED', 'ARCHIVED'].includes(invoice.status);
+  const borderStripe = isUnresolvedFlagged ? 'border-l-4 border-l-rose-600' : isClean ? 'border-l-4 border-l-emerald-600' : 'border-l-4 border-l-transparent';
 
   const poAmount = invoice.matched_purchase_order?.authorized_total || invoice.grand_total;
   const billedAmount = invoice.grand_total || 0;
@@ -15,15 +12,11 @@ export default function InvoiceLedgerRow({ invoice, isSelected, onToggleSelect, 
   const confidence = Math.round((invoice.extraction_confidence || 0.95) * 100);
 
   const formatUsd = (num) =>
-    new Intl.NumberFormat('en-US', {
-      style: 'currency',
-      currency: 'USD',
-      minimumFractionDigits: 2,
-    }).format(num || 0);
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2 }).format(num || 0);
 
   return (
     <tr className={`group hover:bg-[#F8FAFC] transition-colors ${borderStripe} bg-white`}>
-      <td className="py-3 px-4 text-center">
+      <td className={`py-3 px-4 text-center ${borderStripe}`}>
         <input
           type="checkbox"
           checked={isSelected}
@@ -36,8 +29,8 @@ export default function InvoiceLedgerRow({ invoice, isSelected, onToggleSelect, 
       <td className="py-3 px-4 font-mono text-xs font-semibold text-[#0A2540]">
         <div className="flex items-center gap-1.5">
           <span>{invoice.invoice_number}</span>
-          {isAnomaly && <span className="w-1.5 h-1.5 rounded-full bg-[#9F1239]" title="Exception flagged" />}
-          {isClean && <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" title="Verified clean" />}
+          {isUnresolvedFlagged && <span className="w-1.5 h-1.5 rounded-full bg-rose-600" title="Exception flagged" />}
+          {isClean && <span className="w-1.5 h-1.5 rounded-full bg-emerald-600" title="Verified clean" />}
           {isArchive && <span className="material-symbols-outlined text-[#94A3B8] text-[13px]">lock</span>}
         </div>
         <span className="font-mono text-[10px] text-[#94A3B8] block">
@@ -88,9 +81,7 @@ export default function InvoiceLedgerRow({ invoice, isSelected, onToggleSelect, 
           </>
         ) : (
           <>
-            <span className="text-xs font-semibold tracking-tight text-[#475569]">
-              $0.00
-            </span>
+            <span className="text-xs font-semibold tracking-tight text-[#475569]">$0.00</span>
             <span className="block text-[10px] text-[#059669] font-sans font-medium">
               {isArchive ? 'Disbursed' : '100% Parity'}
             </span>
@@ -111,9 +102,9 @@ export default function InvoiceLedgerRow({ invoice, isSelected, onToggleSelect, 
 
       {/* Forensic Status */}
       <td className="py-3 px-4 whitespace-nowrap">
-        {isAnomaly && (
-          <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-mono font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#FEF2F2] text-[#991B1B] border-[#FECACA]">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#DC2626]" />
+        {isUnresolvedFlagged && (
+          <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-mono font-medium tracking-tight inline-flex items-center gap-1.5 border bg-rose-50 text-rose-800 border-rose-200">
+            <span className="w-1.5 h-1.5 rounded-full bg-rose-600" />
             <span>Exception Flagged: {invoice.discrepancy_count || invoice.discrepancies?.length || 1}</span>
           </span>
         )}
@@ -126,7 +117,13 @@ export default function InvoiceLedgerRow({ invoice, isSelected, onToggleSelect, 
         {isArchive && (
           <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-mono font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#F8FAFC] text-[#334155] border-[#E2E8F0]">
             <span className="w-1.5 h-1.5 rounded-full bg-[#64748B]" />
-            <span>{invoice.status === 'APPROVED_WITH_OVERRIDE' ? 'Override Audit' : 'Approved Clean'}</span>
+            <span>
+              {invoice.status === 'REJECTED_DISPUTED' || invoice.status === 'REJECTED'
+                ? 'Dispute Memo Filed'
+                : invoice.status === 'APPROVED_WITH_OVERRIDE'
+                ? 'Override Audit'
+                : 'Approved Clean'}
+            </span>
           </span>
         )}
       </td>

@@ -4,6 +4,7 @@ import {
   MOCK_PURCHASE_ORDERS,
   MOCK_AUDIT_LOGS,
   getInitialMockInvoices,
+  computeMockKpis,
 } from './mockData.js';
 
 function normalizeApiBaseUrl(raw) {
@@ -187,9 +188,10 @@ export const apiClient = {
     }
 
     const cached = getSessionInvoices();
+    const activeInvoices = cached.length > 0 ? cached : [...localInvoices];
     return {
-      kpis: { ...localKpis },
-      invoices: cached.length > 0 ? cached : [...localInvoices],
+      kpis: computeMockKpis(activeInvoices),
+      invoices: activeInvoices,
     };
   },
 

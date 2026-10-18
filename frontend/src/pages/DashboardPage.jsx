@@ -24,17 +24,20 @@ export default function DashboardPage() {
     loadData();
   }, []);
 
+  const isUnresolvedFlagged = (i) =>
+    ['EXCEPTION_FLAGGED', 'NEEDS_REVIEW', 'FLAGGED'].includes(i.status);
+  const isCleanMatch = (i) =>
+    ['VERIFIED_MATCH', 'MATCHED_APPROVED', 'APPROVED', 'AUTO_APPROVED'].includes(i.status);
+  const isArchived = (i) =>
+    ['APPROVED_CLEAN', 'APPROVED_WITH_OVERRIDE', 'REJECTED_DISPUTED', 'REJECTED', 'ARCHIVED'].includes(i.status);
+
   const tabCounts = useMemo(() => {
     const list = data.invoices || [];
     return {
       all: list.length,
-      anomalies: list.filter(
-        (i) => i.status === 'EXCEPTION_FLAGGED' || i.status === 'REJECTED_DISPUTED'
-      ).length,
-      clean: list.filter((i) => i.status === 'VERIFIED_MATCH').length,
-      archive: list.filter(
-        (i) => i.status === 'APPROVED_CLEAN' || i.status === 'APPROVED_WITH_OVERRIDE'
-      ).length,
+      anomalies: list.filter(isUnresolvedFlagged).length,
+      clean: list.filter(isCleanMatch).length,
+      archive: list.filter(isArchived).length,
     };
   }, [data.invoices]);
 
@@ -52,20 +55,9 @@ export default function DashboardPage() {
 
       if (!matchesSearch) return false;
       if (activeTab === 'all') return true;
-      if (activeTab === 'anomalies') {
-        return (
-          inv.status === 'EXCEPTION_FLAGGED' || inv.status === 'REJECTED_DISPUTED'
-        );
-      }
-      if (activeTab === 'clean') {
-        return inv.status === 'VERIFIED_MATCH';
-      }
-      if (activeTab === 'archive') {
-        return (
-          inv.status === 'APPROVED_CLEAN' ||
-          inv.status === 'APPROVED_WITH_OVERRIDE'
-        );
-      }
+      if (activeTab === 'anomalies') return isUnresolvedFlagged(inv);
+      if (activeTab === 'clean') return isCleanMatch(inv);
+      if (activeTab === 'archive') return isArchived(inv);
       return true;
     });
   }, [data.invoices, activeTab, search]);

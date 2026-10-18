@@ -4,12 +4,15 @@ import TabularCurrency from '../../components/common/TabularCurrency';
 
 export default function KpiMetricStrip({ kpis }) {
   const {
-    total_audited_volume = 142850.00,
-    prevented_leakage_amount = 6420.50,
+    total_audited_volume = 17500.00,
+    prevented_leakage_amount = 1650.00,
     pending_exceptions_count = 2,
-    clean_match_rate_percent = 75.0
+    clean_match_rate_percent = 16.7
   } = kpis || {};
 
+  const roiPercent = total_audited_volume > 0
+    ? ((prevented_leakage_amount / total_audited_volume) * 100).toFixed(2)
+    : '9.43';
   const formattedExceptions = String(pending_exceptions_count).padStart(2, '0');
 
   return (
@@ -48,7 +51,7 @@ export default function KpiMetricStrip({ kpis }) {
         <div className="flex items-center justify-between text-[#64748B] text-xs font-mono mb-2">
           <span className="font-semibold tracking-wider">02. PREVENTED LEAKAGE</span>
           <span className="bg-[#ECFDF5] text-[#065F46] border border-[#A7F3D0] text-[10px] font-mono px-1.5 py-0.5 rounded-[4px] font-semibold">
-            +3.02% ROI
+            +{roiPercent}% ROI
           </span>
         </div>
         <div className="text-2xl font-bold text-[#059669]">

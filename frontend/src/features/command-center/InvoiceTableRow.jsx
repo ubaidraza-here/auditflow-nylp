@@ -4,15 +4,22 @@ import StatusTag from '../../components/common/StatusTag';
 import TabularCurrency from '../../components/common/TabularCurrency';
 
 export default function InvoiceTableRow({ invoice, onSelectInvoice }) {
+  const isUnresolvedFlagged = ['EXCEPTION_FLAGGED', 'NEEDS_REVIEW', 'FLAGGED'].includes(invoice.status);
   const isOverrun = invoice.total_variance_amount > 0.005;
 
   return (
     <tr
       onClick={() => onSelectInvoice(invoice.id)}
-      className="border-b border-[#F1F5F9] hover:bg-[#F8FAFC] transition-colors cursor-pointer group"
+      className={`border-b border-[#F1F5F9] hover:bg-[#F8FAFC] transition-colors cursor-pointer group ${
+        isUnresolvedFlagged ? 'border-l-4 border-l-rose-600' : 'border-l-4 border-l-transparent'
+      }`}
     >
       {/* Invoice & Vendor */}
-      <td className="py-3.5 px-4 whitespace-nowrap">
+      <td
+        className={`py-3.5 px-4 whitespace-nowrap ${
+          isUnresolvedFlagged ? 'border-l-4 border-l-rose-600' : 'border-l-4 border-l-transparent'
+        }`}
+      >
         <div className="flex items-center gap-2.5">
           <FileText className="w-4 h-4 text-[#64748B] group-hover:text-[#0A2540] flex-shrink-0" />
           <div>
@@ -20,6 +27,9 @@ export default function InvoiceTableRow({ invoice, onSelectInvoice }) {
               <span className="font-mono font-bold text-xs text-[#0A2540]">
                 {invoice.invoice_number}
               </span>
+              {isUnresolvedFlagged && (
+                <span className="w-1.5 h-1.5 rounded-full bg-rose-600" title="Exception flagged" />
+              )}
               <span className="text-[10px] font-mono text-[#065F46] bg-[#ECFDF5] px-1 py-0.2 rounded border border-[#A7F3D0]">
                 Gemini 3.5 Vision
               </span>

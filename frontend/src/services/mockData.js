@@ -1,11 +1,58 @@
 // Pre-seeded demo and fallback data strictly aligned with docs/07_DATABASE_SCHEMA_AND_SEED_DATA.md
 
 export const MOCK_KPIS = {
-  total_audited_volume: 142850.0,
-  prevented_leakage_amount: 4320.5,
-  pending_exceptions_count: 3,
-  clean_match_rate_percent: 75.0,
+  total_audited_volume: 17500.0,
+  prevented_leakage_amount: 1650.0,
+  pending_exceptions_count: 2,
+  clean_match_rate_percent: 16.7,
 };
+
+export function computeMockKpis(invoices) {
+  const list = invoices || [];
+  const totalVolume = list.reduce(
+    (acc, inv) => acc + (Number(inv.grand_total || inv.billed_amount) || 0),
+    0
+  );
+  const flagged = list.filter(
+    (inv) =>
+      inv.status === 'EXCEPTION_FLAGGED' ||
+      inv.status === 'NEEDS_REVIEW' ||
+      inv.status === 'FLAGGED'
+  );
+  const preventedLeakage = flagged.reduce((acc, inv) => {
+    if (Array.isArray(inv.discrepancies) && inv.discrepancies.length > 0) {
+      const discSum = inv.discrepancies.reduce(
+        (sum, d) => sum + (Number(d.financial_impact || d.variance_amount) || 0),
+        0
+      );
+      if (discSum > 0) return acc + discSum;
+    }
+    if (inv.total_variance_amount != null && Number(inv.total_variance_amount) > 0) {
+      return acc + Number(inv.total_variance_amount);
+    }
+    const billed = Number(inv.grand_total || inv.billed_amount || 0);
+    const po = Number(
+      inv.matched_purchase_order?.authorized_total ||
+      inv.po_baseline_grand_total ||
+      billed
+    );
+    return acc + Math.max(0, billed - po);
+  }, 0);
+  const cleanInvoices = list.filter(
+    (inv) =>
+      inv.status === 'VERIFIED_MATCH' ||
+      inv.status === 'MATCHED_APPROVED' ||
+      inv.status === 'APPROVED' ||
+      inv.status === 'AUTO_APPROVED'
+  );
+  const cleanMatchRate = list.length > 0 ? (cleanInvoices.length / list.length) * 100 : 0;
+  return {
+    total_audited_volume: totalVolume,
+    prevented_leakage_amount: preventedLeakage,
+    pending_exceptions_count: flagged.length,
+    clean_match_rate_percent: cleanMatchRate,
+  };
+}
 
 export const MOCK_PURCHASE_ORDERS = [
   {

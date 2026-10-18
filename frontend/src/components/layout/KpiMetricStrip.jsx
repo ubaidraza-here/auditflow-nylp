@@ -1,37 +1,39 @@
 import React from 'react';
 
-export default function KpiMetricStrip({ kpis, invoices = [], totalInvoicesCount = 6 }) {
-  const data = kpis || {
-    total_audited_volume: 142850.0,
-    prevented_leakage_amount: 4320.5,
-    pending_exceptions_count: 3,
-    clean_match_rate_percent: 75.0,
-  };
+export default function KpiMetricStrip({ kpis, invoices = [], totalInvoicesCount }) {
+  const list = invoices || [];
+  const computedVolume = list.reduce((acc, inv) => acc + (Number(inv.grand_total || inv.billed_amount) || 0), 0);
+  const totalVolume = list.length > 0 ? computedVolume : (kpis?.total_audited_volume || 0);
 
-  const volume = (data.total_audited_volume || 0).toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  const isFlagged = (inv) => ['EXCEPTION_FLAGGED', 'NEEDS_REVIEW', 'FLAGGED'].includes(inv.status);
+  const flaggedInvoices = list.filter(isFlagged);
+  const exceptionsCount = list.length > 0 ? flaggedInvoices.length : (kpis?.pending_exceptions_count ?? 0);
+
+  const computedLeakage = flaggedInvoices.reduce((acc, inv) => {
+    if (Array.isArray(inv.discrepancies) && inv.discrepancies.length > 0) {
+      const discSum = inv.discrepancies.reduce((sum, d) => sum + (Number(d.financial_impact || d.variance_amount) || 0), 0);
+      if (discSum > 0) return acc + discSum;
+    }
+    if (inv.total_variance_amount != null && Number(inv.total_variance_amount) > 0) return acc + Number(inv.total_variance_amount);
+    const billed = Number(inv.grand_total || inv.billed_amount || 0);
+    const po = Number(inv.matched_purchase_order?.authorized_total || inv.po_baseline_grand_total || billed);
+    return acc + Math.max(0, billed - po);
+  }, 0);
+
+  const preventedLeakage = list.length > 0 ? computedLeakage : (kpis?.prevented_leakage_amount || 0);
+  const roiPercent = totalVolume > 0 ? (preventedLeakage / totalVolume) * 100 : 0;
+
+  const isClean = (inv) => ['VERIFIED_MATCH', 'MATCHED_APPROVED', 'APPROVED', 'AUTO_APPROVED'].includes(inv.status);
+  const cleanCount = list.filter(isClean).length;
+  const matchRate = list.length > 0 ? (cleanCount / list.length) * 100 : (kpis?.clean_match_rate_percent || 0);
+  const activeCount = list.length > 0 ? list.length : (totalInvoicesCount || 0);
+
+  const volume = totalVolume.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const [volMain, volDec] = volume.split('.');
-
-  const leakage = (data.prevented_leakage_amount || 0).toLocaleString('en-US', {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  });
+  const leakage = preventedLeakage.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
   const [leakMain, leakDec] = leakage.split('.');
-
-  const flaggedFromInvoices = (invoices || []).filter(
-    (i) => i.status === 'EXCEPTION_FLAGGED' || i.status === 'REJECTED_DISPUTED'
-  ).length;
-
-  const rawExceptions = data.pending_exceptions_count;
-  const exceptionValue =
-    rawExceptions && rawExceptions > 0
-      ? rawExceptions
-      : (flaggedFromInvoices > 0 ? flaggedFromInvoices : (rawExceptions ?? 3));
-
-  const excCount = String(exceptionValue).padStart(2, '0');
-  const matchRate = (data.clean_match_rate_percent || 75.0).toFixed(1);
+  const excCount = String(exceptionsCount).padStart(2, '0');
+  const matchRateStr = matchRate.toFixed(1);
 
   return (
     <section className="w-full">
@@ -52,7 +54,7 @@ export default function KpiMetricStrip({ kpis, invoices = [], totalInvoicesCount
           </div>
           <div className="mt-4 pt-3 border-t border-[#F1F5F9] flex items-center justify-between font-sans text-xs">
             <div className="flex flex-col">
-              <span className="text-[#475569]">{totalInvoicesCount} Active Records</span>
+              <span className="text-[#475569]">{activeCount} Active Records</span>
               <span className="text-[10px] text-slate-400 uppercase tracking-wider">Q4 Treasury Audit</span>
             </div>
             <div className="w-16 h-5">
@@ -73,7 +75,7 @@ export default function KpiMetricStrip({ kpis, invoices = [], totalInvoicesCount
               </span>
               <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans tabular-nums font-semibold tracking-tight inline-flex items-center gap-1.5 border bg-[#F0FDF4] text-[#166534] border-[#BBF7D0]">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A]" />
-                <span>+3.02% ROI</span>
+                <span>+{roiPercent.toFixed(2)}% ROI</span>
               </span>
             </div>
             <div className="flex items-baseline mt-1 font-sans tabular-nums text-[32px] font-semibold tracking-tight text-[#065F46]">
@@ -111,7 +113,7 @@ export default function KpiMetricStrip({ kpis, invoices = [], totalInvoicesCount
           </div>
           <div className="mt-4 pt-3 border-t border-[#F1F5F9] flex items-center justify-between font-sans text-xs">
             <div className="flex flex-col">
-              <span className="text-[#475569]">{exceptionValue} Flagged Violations</span>
+              <span className="text-[#475569]">{exceptionsCount} Flagged Violations</span>
               <span className="text-[10px] text-[#92400E] font-medium">Payment Suspension Active</span>
             </div>
             <div className="w-16 bg-[#F1F5F9] h-1.5 rounded-full overflow-hidden">
@@ -130,7 +132,7 @@ export default function KpiMetricStrip({ kpis, invoices = [], totalInvoicesCount
               <span className="font-sans text-[11px] text-slate-400">Target: 85%</span>
             </div>
             <div className="flex items-baseline mt-1 font-sans tabular-nums text-[32px] font-semibold tracking-tight text-[#0A2540]">
-              <span>{matchRate}</span>
+              <span>{matchRateStr}</span>
               <span className="text-[20px] font-medium opacity-65">%</span>
             </div>
           </div>
@@ -140,7 +142,7 @@ export default function KpiMetricStrip({ kpis, invoices = [], totalInvoicesCount
               <span className="text-[10px] text-slate-400 uppercase tracking-wider">3-Way Automated Match</span>
             </div>
             <div className="w-16 bg-[#F1F5F9] h-1.5 rounded-full overflow-hidden">
-              <div className="bg-[#0A2540] h-full" style={{ width: `${matchRate}%` }} />
+              <div className="bg-[#0A2540] h-full" style={{ width: `${Math.min(100, Number(matchRateStr))}%` }} />
             </div>
           </div>
         </div>
