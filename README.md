@@ -109,7 +109,7 @@ source venv/bin/activate
 # Install dependencies
 pip install -r requirements.txt
 
-# (Optional) Export Gemini API Key
+# (Optional) Setup Gemini/Google AI Studio API Key
 export GEMINI_API_KEY="your-api-key-here"
 # On Windows PowerShell:
 $env:GEMINI_API_KEY="your-api-key-here"
