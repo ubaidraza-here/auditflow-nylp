@@ -263,6 +263,30 @@ async def analyze_invoice(request: Request) -> Dict[str, Any]:
         db.upsert_invoice(audited_invoice)
 
         # 6. Append immutable audit log entry
+        discrepancies = audited_invoice.get("discrepancies") or []
+        if discrepancies:
+            leakage = round(sum(float(d.get("financial_impact", 0.0) or 0.0) for d in discrepancies), 2)
+        else:
+            billed = float(audited_invoice.get("grand_total", 0.0) or 0.0)
+            po_auth = float(
+                (audited_invoice.get("matched_purchase_order") or {}).get("authorized_total")
+                or audited_invoice.get("po_baseline_grand_total")
+                or billed
+            )
+            variance = float(audited_invoice.get("total_variance_amount", 0.0) or (billed - po_auth))
+            leakage = round(max(0.0, variance), 2)
+
+        inv_status = audited_invoice.get("status", "EXCEPTION_FLAGGED")
+        if inv_status in ("EXCEPTION_FLAGGED", "NEEDS_REVIEW", "FLAGGED"):
+            action_type = "FLAGGED_DISCREPANCY"
+            disc_count = len(discrepancies)
+            first_title = discrepancies[0].get("title", "Price/Quantity Variance") if discrepancies else "Discrepancy Detected"
+            memo = f"Intercepted {disc_count} forensic exception(s) ({first_title}); ${leakage:,.2f} disbursement blocked."
+        else:
+            action_type = "AUTO_VERIFY"
+            leakage = 0.0
+            memo = "Auto-Approved 3-Way: Verified parity against authorized Purchase Order ($0.00 variance)."
+
         log_entry = {
             "log_id": f"log_{int(time.time() * 1000)}",
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -270,14 +294,14 @@ async def analyze_invoice(request: Request) -> Dict[str, Any]:
             "invoice_number": audited_invoice.get("invoice_number"),
             "vendor_name": audited_invoice.get("vendor_name"),
             "actor_name": "AuditFlow AI Engine",
-            "action_type": "AI_EXTRACTION_AND_AUDIT",
+            "action_type": action_type,
             "previous_status": "PROCESSING",
-            "new_status": audited_invoice.get("status", "EXCEPTION_FLAGGED"),
-            "financial_impact_saved": 0.0,
-            "justification_notes": (
-                f"Multimodal vision extraction ({audited_invoice.get('extraction_mode', 'AI')}) and "
-                f"automated 7-rule AP audit completed with {audited_invoice.get('discrepancy_count', 0)} discrepancy flags."
-            ),
+            "new_status": inv_status,
+            "financial_impact_saved": leakage,
+            "prevented_leakage": leakage,
+            "financial_impact": leakage,
+            "variance_amount": leakage,
+            "justification_notes": memo,
         }
         db.add_audit_log(log_entry)
 
@@ -288,6 +312,7 @@ async def analyze_invoice(request: Request) -> Dict[str, Any]:
         return {
             "success": True,
             "invoice": audited_invoice,
+            "audit_log_entry": log_entry,
             **audited_invoice,
         }
 
@@ -316,10 +341,50 @@ async def analyze_invoice(request: Request) -> Dict[str, Any]:
     db.upsert_invoice(audited)
     db.compute_kpis()
 
+    # Append audit log entry for demo scenario trigger
+    discrepancies = audited.get("discrepancies") or []
+    var_amt = audited.get("total_variance_amount") or audited.get("variance_amount")
+    if var_amt is not None and float(var_amt) > 0:
+        leakage = round(float(var_amt), 2)
+    elif discrepancies:
+        leakage = round(sum(float(d.get("financial_impact", 0.0) or 0.0) for d in discrepancies), 2)
+    else:
+        leakage = 0.0
+
+    inv_status = audited.get("status", "EXCEPTION_FLAGGED")
+    if inv_status in ("EXCEPTION_FLAGGED", "NEEDS_REVIEW", "FLAGGED"):
+        action_type = "FLAGGED_DISCREPANCY"
+        disc_count = len(discrepancies)
+        first_title = discrepancies[0].get("title", "Price/Quantity Variance") if discrepancies else "Discrepancy Detected"
+        memo = f"Intercepted {disc_count} forensic exception(s) ({first_title}); ${leakage:,.2f} disbursement blocked."
+    else:
+        action_type = "AUTO_VERIFY"
+        leakage = 0.0
+        memo = "Auto-Approved 3-Way: Verified parity against authorized Purchase Order ($0.00 variance)."
+
+    scenario_log = {
+        "log_id": f"log_{int(time.time() * 1000)}",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "invoice_id": audited.get("invoice_id"),
+        "invoice_number": audited.get("invoice_number"),
+        "vendor_name": audited.get("vendor_name"),
+        "actor_name": "AuditFlow AI Engine",
+        "action_type": action_type,
+        "previous_status": "PROCESSING",
+        "new_status": inv_status,
+        "financial_impact_saved": leakage,
+        "prevented_leakage": leakage,
+        "financial_impact": leakage,
+        "variance_amount": leakage,
+        "justification_notes": memo,
+    }
+    db.add_audit_log(scenario_log)
+
     return {
         "success": True,
         "scenario_id": scenario_id,
         "invoice": audited,
+        "audit_log_entry": scenario_log,
         **audited,
     }
 
@@ -387,6 +452,9 @@ def submit_invoice_decision(
         "previous_status": previous_status,
         "new_status": next_status,
         "financial_impact_saved": financial_impact_saved,
+        "prevented_leakage": financial_impact_saved,
+        "financial_impact": financial_impact_saved,
+        "variance_amount": financial_impact_saved,
         "justification_notes": notes,
     }
 

@@ -16,3 +16,12 @@ def get_dashboard_summary() -> DashboardSummaryResponse:
     """Dynamically compute and return executive KPIs and invoice queue."""
     summary_data = db.get_dashboard_summary()
     return DashboardSummaryResponse(**summary_data)
+
+
+@router.post("/reset", response_model=DashboardSummaryResponse)
+def reset_dashboard() -> DashboardSummaryResponse:
+    """Reset the entire in-memory ledger and audit logs back to pristine initial seed state."""
+    db.reset_all()
+    summary_data = db.get_dashboard_summary()
+    return DashboardSummaryResponse(**summary_data)
+

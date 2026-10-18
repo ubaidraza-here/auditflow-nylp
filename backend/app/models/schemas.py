@@ -7,7 +7,7 @@ Strictly aligned with:
 """
 
 from enum import Enum
-from typing import List, Optional
+from typing import Any, List, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -126,6 +126,18 @@ class Discrepancy(BaseModel):
     financial_impact: float = 0.0
 
 
+class DiscrepancyItem(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    rule_code: str
+    rule_name: str
+    severity: Any
+    triggered: bool = True
+    message: str
+    variance_amount: float = 0.0
+    affected_line_number: Optional[int] = None
+
+
 class DisputeEmailDraft(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
@@ -210,6 +222,9 @@ class AuditLogEntry(BaseModel):
     previous_status: str
     new_status: str
     financial_impact_saved: float = 0.0
+    prevented_leakage: Optional[float] = 0.0
+    financial_impact: Optional[float] = 0.0
+    variance_amount: Optional[float] = 0.0
     justification_notes: str
 
 

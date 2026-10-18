@@ -357,13 +357,13 @@ def audit_invoice(
                 }
             )
 
-        # Check if invoice grand total exceeds the PO's authorized ceiling
+        # Check if invoice grand total exceeds the PO's authorized ceiling (when no granular line items exist)
         po_authorized_total = float(
             matched_po.get("authorized_grand_total")
             or matched_po.get("authorized_total")
             or 0.0
         )
-        if po_authorized_total > 0 and grand_total > (po_authorized_total + 0.02):
+        if po_authorized_total > 0 and grand_total > (po_authorized_total + 0.02) and not raw_line_items:
             overrun = round(grand_total - po_authorized_total, 2)
             discrepancies.append(
                 {
@@ -607,6 +607,7 @@ def audit_invoice(
         "status": final_status,
         "extraction_confidence": extraction_confidence,
         "discrepancy_count": len(discrepancies),
+        "total_variance_amount": round(max(0.0, sum(float(d.get("financial_impact", 0.0) or 0.0) for d in discrepancies)), 2),
         "flag_reason": flag_reason,
         "file_hash_sha256": file_hash or None,
         "file_url": invoice_data.get("file_url") or f"/uploads/{normalize_string(vendor_name)}_{normalize_string(invoice_number)}.pdf",

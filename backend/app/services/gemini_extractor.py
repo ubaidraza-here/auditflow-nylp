@@ -161,10 +161,54 @@ def _build_overcharge_payload() -> Dict[str, Any]:
     }
 
 
+def _build_starlight_payload(filename: str = "") -> Dict[str, Any]:
+    """Invoice payload for Starlight Modern Office Solutions referencing PO-2026-106
+    ($1,800.00 with $400 overcharge on chairs and $200 unapproved delivery fee, variance = +$600.00).
+    """
+    return {
+        "extraction_confidence": 0.98,
+        "vendor_name": "Starlight Modern Office Solutions",
+        "vendor_tax_id": "NTN-9938102-5",
+        "vendor_email": "ar@starlightoffices.com",
+        "iban_or_account": "PK18HABB00055443322110",
+        "invoice_number": "INV-3105",
+        "invoice_date": "2026-10-14",
+        "due_date": "2026-11-14",
+        "po_reference": "PO-2026-106",
+        "currency": "USD",
+        "subtotal": 1800.00,
+        "tax_total": 0.00,
+        "discount_amount": 0.00,
+        "grand_total": 1800.00,
+        "line_items": [
+            {
+                "line_number": 1,
+                "description": "Ergonomic Mesh Task Chair",
+                "matched_po_line_id": "pol_10",
+                "matched_po_description": "Ergonomic Mesh Task Chair",
+                "quantity": 4.0,
+                "unit_price": 400.00,
+                "line_total": 1600.00,
+            },
+            {
+                "line_number": 2,
+                "description": "White Glove Assembly & Delivery Surcharge",
+                "matched_po_line_id": None,
+                "matched_po_description": None,
+                "quantity": 1.0,
+                "unit_price": 200.00,
+                "line_total": 200.00,
+            },
+        ],
+    }
+
+
 def _resolve_fallback(filename: str, start_time: float) -> Dict[str, Any]:
     """Inspect filename keywords to return stage-safe realistic fallback payload."""
     fn_lower = (filename or "").lower()
-    if any(k in fn_lower for k in ("clean", "8801", "cloudhost")):
+    if any(k in fn_lower for k in ("3105", "starlight")):
+        payload = _build_starlight_payload(filename)
+    elif any(k in fn_lower for k in ("clean", "8801", "cloudhost")):
         payload = _build_clean_payload(filename)
     elif any(k in fn_lower for k in ("dup", "7710", "prime")):
         payload = _build_duplicate_payload()

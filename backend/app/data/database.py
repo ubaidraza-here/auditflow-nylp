@@ -163,28 +163,55 @@ class Database:
             ]
             pending_exceptions_count = len(flagged_invoices)
 
-            # Card 02: Prevented Financial Leakage = sum of financial_impact / overcharge variances across all flagged invoices
+            # Card 02: Prevented Financial Leakage = sum across all invoices that are EITHER currently flagged OR rejected/disputed (excluding overrides)
             prevented_leakage_amount = 0.0
-            for inv in flagged_invoices:
-                discrepancies = inv.get("discrepancies") or []
-                if discrepancies:
-                    disc_sum = sum(
-                        float(d.get("financial_impact") or d.get("variance_amount") or 0.0)
-                        for d in discrepancies
-                    )
-                    if disc_sum > 0:
-                        prevented_leakage_amount += disc_sum
-                        continue
-                if inv.get("total_variance_amount") is not None and float(inv.get("total_variance_amount", 0.0)) > 0:
-                    prevented_leakage_amount += float(inv.get("total_variance_amount"))
+            for inv in invoices:
+                status = str(inv.get("status", "")).upper()
+                if status in ("APPROVED_WITH_OVERRIDE", "APPROVED_OVERRIDE", "OVERRIDE"):
                     continue
-                billed = float(inv.get("grand_total") or inv.get("billed_amount") or 0.0)
-                po_auth = float(
-                    (inv.get("matched_purchase_order") or {}).get("authorized_total")
-                    or inv.get("po_baseline_grand_total")
-                    or billed
+
+                is_flagged_or_disputed = any(
+                    k in status for k in (
+                        "EXCEPTION_FLAGGED", "NEEDS_REVIEW", "FLAGGED",
+                        "REJECTED_DISPUTED", "DISPUTED", "REJECTED", "REJECT", "DISPUTE MEMO FILED"
+                    )
+                ) or bool(inv.get("flag_reason")) or bool(inv.get("discrepancies"))
+
+                if not is_flagged_or_disputed:
+                    continue
+
+                # Duplicate invoice check: blocking duplicate prevents entire grand total
+                inv_num = str(inv.get("invoice_number", "")).upper()
+                flag_r = str(inv.get("flag_reason", "")).upper()
+                discs = inv.get("discrepancies") or []
+                is_duplicate = (
+                    "-REV" in inv_num
+                    or "DUPLICATE" in flag_r
+                    or any("DUPLICATE" in str(d.get("rule_code", "")).upper() or "DUPLICATE" in str(d.get("title", "")).upper() for d in discs)
                 )
-                prevented_leakage_amount += max(0.0, billed - po_auth)
+
+                if is_duplicate:
+                    total = float(inv.get("grand_total") or inv.get("billed_amount") or 0.0)
+                    disc_sum = sum(float(d.get("financial_impact") or d.get("variance_amount") or 0.0) for d in discs)
+                    var_val = float(inv.get("total_variance_amount") or inv.get("variance_amount") or 0.0)
+                    leakage_val = max(total, disc_sum, var_val)
+                    prevented_leakage_amount += leakage_val
+                    continue
+
+                # Standard variance and line item impact
+                disc_sum = sum(float(d.get("financial_impact") or d.get("variance_amount") or 0.0) for d in discs)
+                var_val = abs(float(inv.get("total_variance_amount") or inv.get("variance_amount") or 0.0))
+                leakage_val = max(disc_sum, var_val)
+                if leakage_val <= 0:
+                    billed = float(inv.get("grand_total") or inv.get("billed_amount") or 0.0)
+                    po_auth = float(
+                        (inv.get("matched_purchase_order") or {}).get("authorized_total")
+                        or inv.get("po_baseline_grand_total")
+                        or billed
+                    )
+                    leakage_val = max(0.0, billed - po_auth)
+
+                prevented_leakage_amount += leakage_val
 
             prevented_leakage_amount = round(prevented_leakage_amount, 2)
 
@@ -192,7 +219,9 @@ class Database:
             clean_invoices_count = sum(
                 1
                 for inv in invoices
-                if inv.get("status") in ("VERIFIED_MATCH", "MATCHED_APPROVED", "APPROVED", "AUTO_APPROVED")
+                if inv.get("status") in ("VERIFIED_MATCH", "MATCHED_APPROVED", "APPROVED", "AUTO_APPROVED", "APPROVED_CLEAN", "Approved Clean")
+                and len(inv.get("discrepancies") or []) == 0
+                and abs(float(inv.get("total_variance_amount") or inv.get("variance_amount") or 0.0)) == 0.0
             )
             total_count = len(invoices)
             clean_match_rate_percent = (
@@ -217,6 +246,12 @@ class Database:
             "invoices": invoices,
         }
 
+    def get_purchase_orders(self) -> List[Dict[str, Any]]:
+        return self.get_all_purchase_orders()
+
+    def get_audit_logs(self) -> List[Dict[str, Any]]:
+        return self.get_all_audit_logs()
+
     # -------------------------------------------------------------------------
     # Complete Reset
     # -------------------------------------------------------------------------
@@ -230,3 +265,9 @@ class Database:
 
 # Singleton database instance
 db = Database()
+
+
+def get_ledger() -> Database:
+    """Return the global database singleton instance."""
+    return db
+
