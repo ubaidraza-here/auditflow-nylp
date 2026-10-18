@@ -1,72 +1,44 @@
-"""Invoice detail, analysis, human-in-the-loop decision, and reset router."""
+"""Invoice analysis, retrieval, human decision, export, and reset router."""
 
 import time
 from datetime import datetime, timezone
 from typing import Optional
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, HTTPException, Request, Response, status
+from fastapi.responses import JSONResponse
 from app.data.database import get_ledger
 from app.models.enums import InvoiceStatus, AuditDecision
-from app.models.schemas import AnalyzeRequest, DecisionRequest, InvoiceAuditRecord
-from app.services.benchmark_scenarios import BENCHMARK_SCENARIOS
-from app.services.discrepancy_auditor import audit_invoice
+from app.models.schemas import DecisionRequest, InvoiceAuditRecord
+from app.services.invoice_analyzer import (
+    handle_file_analysis,
+    handle_scenario_analysis,
+    log_analysis_event,
+)
+from app.services.dossier_exporter import format_json_dossier, format_csv_dossier
 
 router = APIRouter(prefix="/api/invoices", tags=["Invoices"])
 
 
 @router.post("/analyze")
-def analyze_invoice_endpoint(req: Optional[AnalyzeRequest] = None):
-    scenario_id = req.demo_scenario_id if req else "SCENARIO_B_OVERCHARGE"
-    scenario = BENCHMARK_SCENARIOS.get(scenario_id or "SCENARIO_B_OVERCHARGE")
-    if not scenario:
-        raise HTTPException(status_code=400, detail=f"Invalid demo_scenario_id: {scenario_id}")
-
+async def analyze_invoice_endpoint(request: Request):
+    content_type = request.headers.get("content-type", "")
     ledger = get_ledger()
     po_registry = {po["po_number"].upper(): po for po in ledger.get_purchase_orders()}
     ledger_invoices = ledger.get_all_invoices()
 
-    target_id_map = {
-        "SCENARIO_A_CLEAN": "inv_1001",
-        "SCENARIO_B_OVERCHARGE": "inv_1002",
-        "SCENARIO_C_DUPLICATE": "inv_1003",
-    }
-    assigned_id = target_id_map.get(scenario_id, f"inv_{scenario['sha256_hash'][:8]}")
-
-    record = audit_invoice(
-        payload=scenario,
-        ledger_invoices=ledger_invoices,
-        po_registry=po_registry,
-        sha256_hash=scenario["sha256_hash"],
-        file_name=scenario["file_name"],
-        invoice_id=assigned_id,
-    )
+    if "multipart/form-data" in content_type:
+        form = await request.form()
+        file = form.get("file")
+        if not file:
+            raise HTTPException(status_code=400, detail="Multipart upload requires a 'file' field.")
+        record, telemetry = await handle_file_analysis(file, ledger, po_registry, ledger_invoices)
+    else:
+        body = await request.json() if (await request.body()) else {}
+        scenario_id = body.get("demo_scenario_id") if isinstance(body, dict) else None
+        record, telemetry = handle_scenario_analysis(scenario_id or "SCENARIO_B_OVERCHARGE", ledger_invoices, po_registry)
 
     ledger.save_invoice(record.model_dump())
-    violations = [r for r in record.rule_evaluations if r.triggered]
-
-    event_type = "EXCEPTION_DETECTED" if violations else "VERIFIED_MATCH_DETECTED"
-    details = f"Triggered {len(violations)} rule(s)." if violations else "Passed 3-way match clean."
-    ledger.add_audit_log({
-        "id": f"log_{int(time.time() * 1000)}",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "invoice_id": record.id,
-        "invoice_number": record.invoice_number,
-        "event_type": event_type,
-        "actor": "AuditFlow Engine",
-        "details": details,
-    })
-
-    return {
-        "success": True,
-        "stage_telemetry": {
-            "stage1_sha256": record.sha256_hash,
-            "stage1_duplicate_detected": any(r.rule_code == "EXACT_FILE_DUPLICATE" for r in record.rule_evaluations),
-            "stage2_model_used": "gemini-2.5-flash",
-            "stage2_extraction_latency_ms": 1140,
-            "stage3_rules_evaluated": len(record.rule_evaluations),
-            "stage3_violations_found": len(violations),
-        },
-        "invoice": record,
-    }
+    log_analysis_event(ledger, record)
+    return {"success": True, "stage_telemetry": telemetry, "invoice": record}
 
 
 @router.get("/{invoice_id}", response_model=InvoiceAuditRecord)
@@ -76,6 +48,29 @@ def get_invoice(invoice_id: str) -> InvoiceAuditRecord:
     if not inv:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found in ledger")
     return InvoiceAuditRecord(**inv)
+
+
+@router.get("/{invoice_id}/export")
+def export_invoice_dossier(invoice_id: str, format: str = "json"):
+    ledger = get_ledger()
+    inv = ledger.get_invoice(invoice_id)
+    if not inv:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Invoice not found in ledger")
+
+    if format.lower() == "csv":
+        csv_content, sig = format_csv_dossier(inv)
+        headers = {
+            "Content-Disposition": f'attachment; filename="audit_dossier_{invoice_id}.csv"',
+            "X-AuditFlow-Signature": sig,
+        }
+        return Response(content=csv_content, media_type="text/csv", headers=headers)
+
+    dossier = format_json_dossier(inv)
+    headers = {
+        "Content-Disposition": f'attachment; filename="audit_dossier_{invoice_id}.json"',
+        "X-AuditFlow-Signature": dossier["cryptographic_signature"],
+    }
+    return JSONResponse(content=dossier, headers=headers)
 
 
 @router.post("/{invoice_id}/decision")

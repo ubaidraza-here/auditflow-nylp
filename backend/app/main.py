@@ -10,6 +10,7 @@ from app.routers import (
     invoices,
     purchase_orders,
     audit_logs,
+    registry,
 )
 
 load_dotenv()
@@ -41,6 +42,7 @@ app.include_router(dashboard.router)
 app.include_router(invoices.router)
 app.include_router(purchase_orders.router)
 app.include_router(audit_logs.router)
+app.include_router(registry.router)
 
 
 @app.get("/")
