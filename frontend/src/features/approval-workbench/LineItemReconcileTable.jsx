@@ -21,10 +21,10 @@ export default function LineItemReconcileTable({ invoice, po }) {
         <span className="text-xs text-[#64748B]">Deterministic Unit-Price Tolerance: ±$0.02</span>
       </div>
 
-      <div className="overflow-x-auto">
-        <table className="w-full text-left border-collapse text-xs">
+      <div className="w-full overflow-x-auto">
+        <table className="w-full min-w-[760px] text-left border-collapse text-xs">
           <thead>
-            <tr className="bg-[#F1F5F9] border-b border-[#E2E8F0] text-[11px] font-mono text-[#475569] uppercase font-semibold">
+            <tr className="bg-[#F1F5F9] border-b border-[#E2E8F0] text-[11px] font-mono text-[#475569] uppercase font-semibold whitespace-nowrap">
               <th className="py-2.5 px-3">Line &amp; Description</th>
               <th className="py-2.5 px-3">PO Mapping</th>
               <th className="py-2.5 px-3 text-right">Qty</th>

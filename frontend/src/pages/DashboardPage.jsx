@@ -57,7 +57,7 @@ export default function DashboardPage({ onSelectInvoice }) {
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6">
+    <div className="max-w-[1440px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
       {/* Title & Actions Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-4 mb-6 border-b border-[#E2E8F0] gap-3">
         <div>
