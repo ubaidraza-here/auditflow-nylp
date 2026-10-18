@@ -20,11 +20,6 @@ from app.data.seed_data import (
     get_initial_seed_audit_logs,
 )
 
-# Historical baseline constants representing audited volume and leakage prior to active queue
-BASE_HISTORICAL_VOLUME = 125350.0
-BASE_HISTORICAL_LEAKAGE = 3870.5
-BASE_HISTORICAL_CLEAN_COUNT = 43
-BASE_HISTORICAL_TOTAL_COUNT = 54
 
 
 class Database:
@@ -154,33 +149,56 @@ class Database:
         """Dynamically compute top-level Accounts Payable KPIs based on current ledger state."""
         with self._lock:
             invoices = self._invoices
-            audit_logs = self._audit_logs
 
-            # Total Audited Volume = historical baseline + sum of all current invoices
-            invoices_volume = sum(float(inv.get("grand_total", 0.0) or 0.0) for inv in invoices)
-            total_audited_volume = round(BASE_HISTORICAL_VOLUME + invoices_volume, 2)
-
-            # Prevented Financial Leakage = historical baseline + sum of all saved impacts in audit logs
-            logs_saved = sum(
-                float(log.get("financial_impact_saved", 0.0) or 0.0) for log in audit_logs
-            )
-            prevented_leakage_amount = round(BASE_HISTORICAL_LEAKAGE + logs_saved, 2)
-
-            # Pending Exceptions Count = invoices currently waiting for human audit
-            pending_exceptions_count = sum(
-                1 for inv in invoices if inv.get("status") == "EXCEPTION_FLAGGED"
+            # Card 01: Audited Gross Volume = exact sum of billed_amount / grand_total of all invoices
+            total_audited_volume = round(
+                sum(float(inv.get("grand_total") or inv.get("billed_amount") or 0.0) for inv in invoices),
+                2
             )
 
-            # Clean Match Rate = percentage of clean match invoices (VERIFIED_MATCH or APPROVED_CLEAN)
+            # Card 03: Pending Exceptions Count = count of unresolved EXCEPTION_FLAGGED / NEEDS_REVIEW invoices
+            flagged_invoices = [
+                inv for inv in invoices
+                if inv.get("status") in ("EXCEPTION_FLAGGED", "NEEDS_REVIEW", "FLAGGED")
+            ]
+            pending_exceptions_count = len(flagged_invoices)
+
+            # Card 02: Prevented Financial Leakage = sum of financial_impact / overcharge variances across all flagged invoices
+            prevented_leakage_amount = 0.0
+            for inv in flagged_invoices:
+                discrepancies = inv.get("discrepancies") or []
+                if discrepancies:
+                    disc_sum = sum(
+                        float(d.get("financial_impact") or d.get("variance_amount") or 0.0)
+                        for d in discrepancies
+                    )
+                    if disc_sum > 0:
+                        prevented_leakage_amount += disc_sum
+                        continue
+                if inv.get("total_variance_amount") is not None and float(inv.get("total_variance_amount", 0.0)) > 0:
+                    prevented_leakage_amount += float(inv.get("total_variance_amount"))
+                    continue
+                billed = float(inv.get("grand_total") or inv.get("billed_amount") or 0.0)
+                po_auth = float(
+                    (inv.get("matched_purchase_order") or {}).get("authorized_total")
+                    or inv.get("po_baseline_grand_total")
+                    or billed
+                )
+                prevented_leakage_amount += max(0.0, billed - po_auth)
+
+            prevented_leakage_amount = round(prevented_leakage_amount, 2)
+
+            # Card 04: Zero-Touch Match Rate = (verified_clean_count / total_count) * 100
             clean_invoices_count = sum(
                 1
                 for inv in invoices
-                if inv.get("status") in ("VERIFIED_MATCH", "APPROVED_CLEAN")
+                if inv.get("status") in ("VERIFIED_MATCH", "MATCHED_APPROVED", "APPROVED", "AUTO_APPROVED")
             )
-            total_count = BASE_HISTORICAL_TOTAL_COUNT + len(invoices)
-            total_clean = BASE_HISTORICAL_CLEAN_COUNT + clean_invoices_count
+            total_count = len(invoices)
             clean_match_rate_percent = (
-                round((total_clean / total_count) * 100.0, 1) if total_count > 0 else 75.0
+                round((clean_invoices_count / total_count) * 100.0, 1)
+                if total_count > 0
+                else 0.0
             )
 
             return {
