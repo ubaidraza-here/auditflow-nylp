@@ -1,123 +1,295 @@
-"""Multimodal Vision Extraction with Multi-Model Cascade and 45s Timeout."""
+"""Multimodal Gemini 2.5 Flash Invoice Extractor for AuditFlow.
 
-import os
+Strictly aligned with:
+- Section 2 of docs/08_AI_PIPELINE_AND_PROMPTS.md
+- docs/06_SYSTEM_ARCHITECTURE.md (AI Multimodal Engine)
+- Official google-genai SDK (gemini-2.5-flash with structured JSON response_schema)
+
+Includes Stage-Safe Fallback Simulation:
+If GEMINI_API_KEY is missing/placeholder or if network/quota errors occur,
+it returns deterministic, highly realistic audit payloads based on filename keywords.
+"""
+
 import json
-import time
 import logging
-from typing import List, Dict, Any
+import os
+import time
+from typing import Any, Dict, List, Optional
 from dotenv import load_dotenv
-from app.models.invoice_schemas import ExtractedInvoicePayload
-from app.services.benchmark_scenarios import BENCHMARK_SCENARIOS
 
+from app.models.schemas import ExtractedInvoicePayload
+
+# Load environment variables
 load_dotenv()
+
 logger = logging.getLogger("auditflow.gemini_extractor")
 
-CASCADE_MODELS = [
-    os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
-    "gemini-2.5-flash-lite",
-    "gemini-3.5-lite",
-    "gemini-2.0-flash-lite",
-    "gemini-1.5-flash",
-]
+SYSTEM_PROMPT = """You are an institutional Accounts Payable Audit Extraction Engine.
+Your task is to analyze the provided vendor invoice image/PDF and extract all billing metadata, line items, and summary totals into the exact required Pydantic JSON schema.
+
+CRITICAL RULES:
+1. Extract values exactly as printed on the document. Do not auto-correct math errors printed on the invoice; our deterministic Python engine will test the invoice's math separately.
+2. If a field (such as po_reference, vendor_tax_id, or iban_or_account) is missing from the document, return null for that field.
+3. For each extracted line item, compare its description against the provided candidate Purchase Order line items (if any) and populate `matched_po_line_id` and `matched_po_description` if they refer to the same physical product or service (e.g., "27-in FHD Monitor" matches "Dell 27-inch IPS Monitor"). If the item on the invoice does not match any PO item (such as an unapproved shipping or rush fee), set `matched_po_line_id` to null.
+4. Provide an honest `extraction_confidence` score between 0.00 and 1.00 reflecting document legibility and completeness.
+5. All financial and monetary amounts (`subtotal`, `tax_total`, `grand_total`, `unit_price`, `line_total`) must be parsed as numeric float values (e.g., 2950.00, 950.00, 120.00), removing any currency symbols ($ or commas).
+"""
 
 
-def build_extraction_prompt(po_list: List[dict]) -> str:
-    po_registry_json = json.dumps(po_list, indent=2)
-    return (
-        "You are an expert multimodal forensic accounting vision auditor for AuditFlow.\n"
-        "Your task is to optically extract all invoice metadata and line items from the provided document image with extreme precision.\n\n"
-        "CRITICAL EXTRACTION DIRECTIVES:\n"
-        "1. ZERO ARITHMETIC LAW: Do NOT re-calculate, multiply, or adjust numbers. Extract the exact printed numbers as they appear on the document.\n"
-        "2. ERP PO BASELINE SEMANTIC MAPPING:\n"
-        "   Below is the active registry of authorized corporate Purchase Orders:\n"
-        f"   --- ACTIVE ERP PURCHASE ORDERS ---\n{po_registry_json}\n   ----------------------------------\n"
-        "   For each extracted invoice line item, determine if it corresponds to an authorized item in the referenced PO.\n"
-        "   - If it matches a PO line item, assign its 'matched_po_line_id' (e.g. 'POL-102-1').\n"
-        "   - If an item is uncontracted (e.g. unexpected shipping, fuel surcharge, rush delivery), set 'matched_po_line_id' to null.\n"
-        "3. BOUNDING BOX COORDINATES: Provide normalized integer bounding box coordinates [0-1000] for each line item row on the page.\n"
-        "4. CONFIDENCE SCORE: Assess document legibility, contrast, and OCR certainty on a scale of 0.0 to 1.0."
-    )
+def _build_clean_payload(filename: str = "") -> Dict[str, Any]:
+    """Clean invoice payload matching PO-2026-101 ($950.00)."""
+    inv_num = "INV-8801" if "8801" in (filename or "").lower() else "INV-8802"
+    return {
+        "extraction_confidence": 0.99,
+        "vendor_name": "CloudHost Enterprise PK",
+        "vendor_tax_id": "NTN-4410928-1",
+        "vendor_email": "billing@cloudhost.pk",
+        "iban_or_account": "PK91MEZN00010203040506",
+        "invoice_number": inv_num,
+        "invoice_date": "2026-10-14",
+        "due_date": "2026-11-14",
+        "po_reference": "PO-2026-101",
+        "currency": "USD",
+        "subtotal": 950.00,
+        "tax_total": 0.00,
+        "discount_amount": 0.00,
+        "grand_total": 950.00,
+        "line_items": [
+            {
+                "line_number": 1,
+                "description": "Dedicated GPU Server Instance (Monthly)",
+                "matched_po_line_id": "pol_01",
+                "matched_po_description": "Dedicated GPU Server Instance (Monthly)",
+                "quantity": 2.0,
+                "unit_price": 400.00,
+                "line_total": 800.00,
+            },
+            {
+                "line_number": 2,
+                "description": "Managed Automated Backups",
+                "matched_po_line_id": "pol_02",
+                "matched_po_description": "Managed Automated Backups",
+                "quantity": 1.0,
+                "unit_price": 150.00,
+                "line_total": 150.00,
+            },
+        ],
+    }
 
 
-def get_fallback_payload(filename: str) -> ExtractedInvoicePayload:
-    fn = (filename or "").lower()
-    if "clean" in fn or "8801" in fn:
-        scenario_key = "SCENARIO_A_CLEAN"
-    elif "dup" in fn or "7710" in fn:
-        scenario_key = "SCENARIO_C_DUPLICATE"
+
+def _build_duplicate_payload() -> Dict[str, Any]:
+    """Duplicate invoice payload matching PO-2026-103 ($1,200.00, INV-7710-REV)."""
+    return {
+        "extraction_confidence": 0.97,
+        "vendor_name": "Prime Office Logistics",
+        "vendor_tax_id": "NTN-1129384-9",
+        "vendor_email": "accounts@primeoffice.pk",
+        "iban_or_account": "PK12HABB00099887766554",
+        "invoice_number": "INV-7710-REV",
+        "invoice_date": "2026-10-14",
+        "due_date": "2026-11-03",
+        "po_reference": "PO-2026-103",
+        "currency": "USD",
+        "subtotal": 1200.00,
+        "tax_total": 0.00,
+        "discount_amount": 0.00,
+        "grand_total": 1200.00,
+        "line_items": [
+            {
+                "line_number": 1,
+                "description": "Ergonomic Mesh Task Chair (Office Suite)",
+                "matched_po_line_id": "pol_05",
+                "matched_po_description": "Ergonomic Mesh Task Chair",
+                "quantity": 4.0,
+                "unit_price": 300.00,
+                "line_total": 1200.00,
+            },
+        ],
+    }
+
+
+def _build_overcharge_payload() -> Dict[str, Any]:
+    """Realistic invoice payload for Apex Tech Solutions referencing PO-2026-102
+
+    ($2,950.00 with $250 unit price overcharge on monitors and $50 unapproved rush fee).
+    """
+    return {
+        "extraction_confidence": 0.96,
+        "vendor_name": "Apex Tech Solutions",
+        "vendor_tax_id": "NTN-8839201-4",
+        "vendor_email": "billing@apextech.com",
+        "iban_or_account": "PK36SCBL00000011223344",
+        "invoice_number": "INV-9042",
+        "invoice_date": "2026-10-14",
+        "due_date": "2026-11-14",
+        "po_reference": "PO-2026-102",
+        "currency": "USD",
+        "subtotal": 2950.00,
+        "tax_total": 0.00,
+        "discount_amount": 0.00,
+        "grand_total": 2950.00,
+        "line_items": [
+            {
+                "line_number": 1,
+                "description": "27-inch IPS Monitor Panel",
+                "matched_po_line_id": "pol_03",
+                "matched_po_description": "Dell 27-inch IPS Monitor",
+                "quantity": 10.0,
+                "unit_price": 250.00,
+                "line_total": 2500.00,
+            },
+            {
+                "line_number": 2,
+                "description": "USB-C Multiport Docking Station",
+                "matched_po_line_id": "pol_04",
+                "matched_po_description": "USB-C Docking Station",
+                "quantity": 5.0,
+                "unit_price": 80.00,
+                "line_total": 400.00,
+            },
+            {
+                "line_number": 3,
+                "description": "Rush Delivery Fee",
+                "matched_po_line_id": None,
+                "matched_po_description": None,
+                "quantity": 1.0,
+                "unit_price": 50.00,
+                "line_total": 50.00,
+            },
+        ],
+    }
+
+
+def _resolve_fallback(filename: str, start_time: float) -> Dict[str, Any]:
+    """Inspect filename keywords to return stage-safe realistic fallback payload."""
+    fn_lower = (filename or "").lower()
+    if any(k in fn_lower for k in ("clean", "8801", "cloudhost")):
+        payload = _build_clean_payload(filename)
+    elif any(k in fn_lower for k in ("dup", "7710", "prime")):
+        payload = _build_duplicate_payload()
     else:
-        scenario_key = "SCENARIO_B_OVERCHARGE"
-    return ExtractedInvoicePayload(**BENCHMARK_SCENARIOS[scenario_key])
+        payload = _build_overcharge_payload()
+
+    latency_ms = max(18, int((time.perf_counter() - start_time) * 1000))
+    payload["extraction_mode"] = "FALLBACK_SIMULATION"
+    payload["processing_latency_ms"] = latency_ms
+    # Provide nested copy for compatibility
+    payload["extracted_data"] = dict(payload)
+    return payload
 
 
 def extract_invoice_with_gemini(
     file_bytes: bytes,
     mime_type: str,
     filename: str,
-    po_list: List[dict],
+    po_list: Optional[List[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
-    start_time = time.time()
+    """Extract structured invoice data using Google GenAI SDK (gemini-2.5-flash).
+
+    Falls back safely to realistic deterministic data if API key is invalid
+    or network/quota errors occur, guaranteeing that the pipeline never crashes.
+    """
+    start_time = time.perf_counter()
+
+    # Load PO context for semantic matching
+    if not po_list:
+        from app.data.database import db
+
+        po_list = db.get_all_purchase_orders()
+
+    po_context_str = json.dumps(po_list, indent=2, default=str)
+    prompt = (
+        f"Candidate Purchase Orders for line-item matching:\n"
+        f"{po_context_str}\n\n"
+        f"Extract this invoice strictly following the schema. For each line item, "
+        f"compare against candidate Purchase Orders and assign matched_po_line_id "
+        f"and matched_po_description if applicable."
+    )
+
     api_key = os.getenv("GEMINI_API_KEY", "").strip()
+    is_placeholder = (
+        not api_key
+        or api_key.startswith("your_")
+        or api_key.startswith("INSERT_")
+        or len(api_key) < 15
+    )
 
-    if not api_key:
-        logger.info("GEMINI_API_KEY not configured. Employing deterministic benchmark fallback.")
-        payload = get_fallback_payload(filename)
-        latency = int((time.time() - start_time) * 1000) or 85
-        return {
-            "payload": payload,
-            "model_used": "deterministic-benchmark-simulator",
-            "latency_ms": latency,
-            "fallback": True,
-        }
+    if is_placeholder:
+        logger.info(
+            "GEMINI_API_KEY not configured or placeholder. Activating Stage-Safe Fallback."
+        )
+        return _resolve_fallback(filename, start_time)
 
-    client = None
-    types_mod = None
     try:
         from google import genai
         from google.genai import types
-        types_mod = types
-        client = genai.Client(
-            api_key=api_key,
-            http_options=types.HttpOptions(timeout=45.0),
-        )
-    except Exception as init_err:
-        logger.warning("Failed to initialize Google GenAI Client: %s", init_err)
 
-    if client and types_mod:
-        prompt = build_extraction_prompt(po_list)
-        part = types_mod.Part.from_bytes(data=file_bytes, mime_type=mime_type or "image/png")
-        gen_config = types_mod.GenerateContentConfig(
-            temperature=0.0,
-            response_mime_type="application/json",
-            response_schema=ExtractedInvoicePayload,
-        )
-        for model_name in CASCADE_MODELS:
+        client = genai.Client(api_key=api_key)
+        clean_mime = mime_type if mime_type and "/" in mime_type else "application/pdf"
+
+        # Active production models for 2026 (handles deprecation & temporary high-demand spikes)
+        candidate_models = [
+            os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite"),
+            "gemini-3.5-flash",
+            "gemini-3.5-flash-lite",
+            "gemini-3-flash-preview",
+        ]
+        # Deduplicate preserving order
+        seen = set()
+        active_models = [m for m in candidate_models if not (m in seen or seen.add(m))]
+
+        last_error = None
+        for model_name in active_models:
             try:
-                logger.info("Cascade attempt with model: %s", model_name)
-                resp = client.models.generate_content(
+                logger.info("Attempting Gemini live extraction with model '%s'...", model_name)
+                response = client.models.generate_content(
                     model=model_name,
-                    contents=[part, prompt],
-                    config=gen_config,
+                    contents=[
+                        types.Part.from_bytes(data=file_bytes, mime_type=clean_mime),
+                        prompt,
+                    ],
+                    config=types.GenerateContentConfig(
+                        system_instruction=SYSTEM_PROMPT,
+                        response_mime_type="application/json",
+                        response_schema=ExtractedInvoicePayload,
+                        temperature=0.0,
+                    ),
                 )
-                if resp and resp.text:
-                    data = json.loads(resp.text)
-                    payload = ExtractedInvoicePayload(**data)
-                    latency = max(int((time.time() - start_time) * 1000), 1)
-                    return {
-                        "payload": payload,
-                        "model_used": model_name,
-                        "latency_ms": latency,
-                        "fallback": False,
-                    }
-            except Exception as cascade_err:
-                logger.warning("Model %s failed: %s. Cascading...", model_name, cascade_err)
+
+                latency_ms = max(1, int((time.perf_counter() - start_time) * 1000))
+                extracted_obj = ExtractedInvoicePayload.model_validate_json(response.text)
+                payload = extracted_obj.model_dump()
+                payload["extraction_mode"] = "GEMINI_LIVE"
+                payload["extraction_model"] = model_name
+                payload["processing_latency_ms"] = latency_ms
+                payload["extracted_data"] = dict(payload)
+                logger.info(
+                    "Gemini live extraction SUCCESS with model '%s' in %dms.",
+                    model_name,
+                    latency_ms,
+                )
+                return payload
+            except Exception as exc:
+                last_error = exc
+                logger.warning(
+                    "Model '%s' failed (%s: %s). Trying next candidate...",
+                    model_name,
+                    type(exc).__name__,
+                    str(exc),
+                )
                 continue
 
-    payload = get_fallback_payload(filename)
-    latency = max(int((time.time() - start_time) * 1000), 1)
-    return {
-        "payload": payload,
-        "model_used": "fallback-simulation-post-cascade",
-        "latency_ms": latency,
-        "fallback": True,
-    }
+        # If all candidates fail, raise or fall back
+        if last_error:
+            raise last_error
+
+    except Exception as e:
+        logger.warning(
+            "All Gemini live models failed (%s: %s). Activating Stage-Safe Fallback for file '%s'.",
+            type(e).__name__,
+            str(e),
+            filename,
+        )
+        return _resolve_fallback(filename, start_time)
+

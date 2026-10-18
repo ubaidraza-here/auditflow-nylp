@@ -1,137 +1,214 @@
-"""Thread-safe In-Memory ERP & Invoice Ledger with Deepcopy Re-Seed."""
+"""In-Memory and Local JSON Persistent Ledger for AuditFlow.
+
+Maintains:
+- Active Purchase Orders
+- Audited Invoices Ledger
+- Immutable Compliance Audit Logs
+- Immutable Seed Blueprint for clean demo resets
+- Thread-safe operations
+"""
 
 import copy
 import threading
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 from app.data.seed_data import (
-    SEED_PURCHASE_ORDERS,
-    SEED_INVOICES,
-    SEED_AUDIT_LOGS,
+    INITIAL_SEED_INVOICES,
+    INITIAL_SEED_PURCHASE_ORDERS,
+    INITIAL_SEED_AUDIT_LOGS,
+    get_initial_seed_invoices,
+    get_initial_seed_purchase_orders,
+    get_initial_seed_audit_logs,
 )
 
-BASE_PORTFOLIO_VOLUME = 125350.00
-BASE_PREVENTED_LEAKAGE = 1070.50
-BASE_CLEAN_COUNT = 16
-BASE_RESOLVED_COUNT = 20
+# Historical baseline constants representing audited volume and leakage prior to active queue
+BASE_HISTORICAL_VOLUME = 125350.0
+BASE_HISTORICAL_LEAKAGE = 3870.5
+BASE_HISTORICAL_CLEAN_COUNT = 43
+BASE_HISTORICAL_TOTAL_COUNT = 54
 
 
-class InMemoryLedger:
+class Database:
+    """Thread-safe ledger store for AuditFlow."""
+
     def __init__(self):
         self._lock = threading.Lock()
-        self.reset()
+        self._invoices: List[Dict[str, Any]] = get_initial_seed_invoices()
+        self._purchase_orders: List[Dict[str, Any]] = get_initial_seed_purchase_orders()
+        self._audit_logs: List[Dict[str, Any]] = get_initial_seed_audit_logs()
 
-    def reset(self):
+    # -------------------------------------------------------------------------
+    # Invoices
+    # -------------------------------------------------------------------------
+    def get_all_invoices(self) -> List[Dict[str, Any]]:
+        """Return shallow copies of all current invoices."""
         with self._lock:
-            self.purchase_orders: List[dict] = copy.deepcopy(SEED_PURCHASE_ORDERS)
-            self.invoices: Dict[str, dict] = {
-                inv["id"]: copy.deepcopy(inv) for inv in SEED_INVOICES
-            }
-            self.audit_logs: List[dict] = copy.deepcopy(SEED_AUDIT_LOGS)
+            return [dict(inv) for inv in self._invoices]
 
-    def reset_invoice(self, invoice_id: str) -> Optional[dict]:
+    def get_invoice_by_id_or_number(self, identifier: str) -> Optional[Dict[str, Any]]:
+        """Find an invoice by either its invoice_id (e.g. inv_1002) or invoice_number (e.g. INV-9042)."""
+        identifier_clean = identifier.strip().lower()
         with self._lock:
-            needle = invoice_id.strip().lower()
-            orig = next(
-                (i for i in SEED_INVOICES if i["id"].lower() == needle or i["invoice_number"].lower() == needle),
-                None,
-            )
-            if orig:
-                restored = copy.deepcopy(orig)
-                self.invoices[restored["id"]] = restored
-                return restored
-            return None
-
-    def get_invoice(self, id_or_number: str) -> Optional[dict]:
-        with self._lock:
-            needle = id_or_number.strip().lower()
-            for inv in self.invoices.values():
-                if inv["id"].lower() == needle or inv["invoice_number"].lower() == needle:
+            for inv in self._invoices:
+                if (
+                    inv.get("invoice_id", "").lower() == identifier_clean
+                    or inv.get("invoice_number", "").lower() == identifier_clean
+                ):
                     return copy.deepcopy(inv)
-            return None
+        return None
 
-    def get_all_invoices(self) -> List[dict]:
-        with self._lock:
-            return [copy.deepcopy(inv) for inv in self.invoices.values()]
+    def upsert_invoice(self, invoice_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Insert or update an invoice in the ledger."""
+        inv_id = invoice_data.get("invoice_id")
 
-    def save_invoice(self, invoice_data: dict) -> dict:
         with self._lock:
-            self.invoices[invoice_data["id"]] = copy.deepcopy(invoice_data)
+            if inv_id:
+                for idx, inv in enumerate(self._invoices):
+                    if inv.get("invoice_id") == inv_id:
+                        self._invoices[idx] = copy.deepcopy(invoice_data)
+                        return copy.deepcopy(invoice_data)
+            else:
+                inv_num = invoice_data.get("invoice_number")
+                if inv_num:
+                    for idx, inv in enumerate(self._invoices):
+                        if inv.get("invoice_number") == inv_num:
+                            self._invoices[idx] = copy.deepcopy(invoice_data)
+                            return copy.deepcopy(invoice_data)
+
+            # Not found -> insert at beginning
+            self._invoices.insert(0, copy.deepcopy(invoice_data))
             return copy.deepcopy(invoice_data)
 
-    def get_purchase_orders(self) -> List[dict]:
-        with self._lock:
-            return copy.deepcopy(self.purchase_orders)
+    def reset_invoice(self, identifier: str) -> Optional[Dict[str, Any]]:
+        """Reset a specific invoice to its original pristine state from the blueprint."""
+        identifier_clean = identifier.strip().lower()
+        blueprint = get_initial_seed_invoices()
 
-    def get_po(self, po_number: str) -> Optional[dict]:
+        match = None
+        for inv in blueprint:
+            if (
+                inv.get("invoice_id", "").lower() == identifier_clean
+                or inv.get("invoice_number", "").lower() == identifier_clean
+            ):
+                match = inv
+                break
+
+        if not match:
+            # Fallback to first invoice in blueprint if not found
+            match = blueprint[0]
+
+        fresh = copy.deepcopy(match)
+        if "decision_metadata" in fresh:
+            del fresh["decision_metadata"]
+
         with self._lock:
-            needle = po_number.strip().upper()
-            for po in self.purchase_orders:
-                if po["po_number"].strip().upper() == needle:
+            updated = False
+            for idx, inv in enumerate(self._invoices):
+                if (
+                    inv.get("invoice_id") == fresh.get("invoice_id")
+                    or inv.get("invoice_number") == fresh.get("invoice_number")
+                ):
+                    self._invoices[idx] = fresh
+                    updated = True
+                    break
+            if not updated:
+                self._invoices.insert(0, fresh)
+
+        return copy.deepcopy(fresh)
+
+    # -------------------------------------------------------------------------
+    # Purchase Orders
+    # -------------------------------------------------------------------------
+    def get_all_purchase_orders(self) -> List[Dict[str, Any]]:
+        """Return all active Purchase Orders."""
+        with self._lock:
+            return copy.deepcopy(self._purchase_orders)
+
+    def get_purchase_order(self, po_number: str) -> Optional[Dict[str, Any]]:
+        """Find a Purchase Order by its PO number."""
+        po_clean = po_number.strip().upper()
+        with self._lock:
+            for po in self._purchase_orders:
+                if po.get("po_number", "").upper() == po_clean:
                     return copy.deepcopy(po)
-            return None
+        return None
 
-    def get_audit_logs(self) -> List[dict]:
+    # -------------------------------------------------------------------------
+    # Audit Logs
+    # -------------------------------------------------------------------------
+    def get_all_audit_logs(self) -> List[Dict[str, Any]]:
+        """Return all chronological audit logs, newest first."""
         with self._lock:
-            return copy.deepcopy(self.audit_logs)
+            return copy.deepcopy(self._audit_logs)
 
-    def add_audit_log(self, entry: dict):
+    def add_audit_log(self, log_entry: Dict[str, Any]) -> Dict[str, Any]:
+        """Prepend an immutable log entry to the ledger."""
+        entry = copy.deepcopy(log_entry)
         with self._lock:
-            self.audit_logs.insert(0, copy.deepcopy(entry))
+            self._audit_logs.insert(0, entry)
+        return entry
 
-    def compute_kpis(self) -> dict:
+    # -------------------------------------------------------------------------
+    # Dynamic KPI Computation
+    # -------------------------------------------------------------------------
+    def compute_kpis(self) -> Dict[str, Any]:
+        """Dynamically compute top-level Accounts Payable KPIs based on current ledger state."""
         with self._lock:
-            invs = list(self.invoices.values())
-            total_vol = BASE_PORTFOLIO_VOLUME + sum(i.get("grand_total", 0.0) for i in invs)
-            leakage = BASE_PREVENTED_LEAKAGE + sum(
-                i.get("total_variance_amount", 0.0)
-                for i in invs
-                if i.get("status") in ["EXCEPTION_FLAGGED", "REJECTED_DISPUTED"]
-                and i.get("total_variance_amount", 0.0) > 0
+            invoices = self._invoices
+            audit_logs = self._audit_logs
+
+            # Total Audited Volume = historical baseline + sum of all current invoices
+            invoices_volume = sum(float(inv.get("grand_total", 0.0) or 0.0) for inv in invoices)
+            total_audited_volume = round(BASE_HISTORICAL_VOLUME + invoices_volume, 2)
+
+            # Prevented Financial Leakage = historical baseline + sum of all saved impacts in audit logs
+            logs_saved = sum(
+                float(log.get("financial_impact_saved", 0.0) or 0.0) for log in audit_logs
             )
-            pending = sum(1 for i in invs if i.get("status") == "EXCEPTION_FLAGGED")
-            clean_in_ledger = sum(1 for i in invs if i.get("status") in ["VERIFIED_MATCH", "APPROVED_CLEAN"])
-            resolved_in_ledger = sum(1 for i in invs if i.get("status") != "EXCEPTION_FLAGGED")
-            total_clean = BASE_CLEAN_COUNT + clean_in_ledger
-            total_resolved = BASE_RESOLVED_COUNT + resolved_in_ledger
-            match_rate = round((total_clean / total_resolved) * 100, 1) if total_resolved > 0 else 0.0
+            prevented_leakage_amount = round(BASE_HISTORICAL_LEAKAGE + logs_saved, 2)
+
+            # Pending Exceptions Count = invoices currently waiting for human audit
+            pending_exceptions_count = sum(
+                1 for inv in invoices if inv.get("status") == "EXCEPTION_FLAGGED"
+            )
+
+            # Clean Match Rate = percentage of clean match invoices (VERIFIED_MATCH or APPROVED_CLEAN)
+            clean_invoices_count = sum(
+                1
+                for inv in invoices
+                if inv.get("status") in ("VERIFIED_MATCH", "APPROVED_CLEAN")
+            )
+            total_count = BASE_HISTORICAL_TOTAL_COUNT + len(invoices)
+            total_clean = BASE_HISTORICAL_CLEAN_COUNT + clean_invoices_count
+            clean_match_rate_percent = (
+                round((total_clean / total_count) * 100.0, 1) if total_count > 0 else 75.0
+            )
+
             return {
-                "total_audited_volume": round(total_vol, 2),
-                "prevented_leakage_amount": round(leakage, 2),
-                "pending_exceptions_count": pending,
-                "clean_match_rate_percent": match_rate,
+                "total_audited_volume": total_audited_volume,
+                "prevented_leakage_amount": prevented_leakage_amount,
+                "pending_exceptions_count": pending_exceptions_count,
+                "clean_match_rate_percent": clean_match_rate_percent,
             }
 
-    def get_dashboard_summary(self) -> dict:
+    def get_dashboard_summary(self) -> Dict[str, Any]:
+        """Return the combined dynamic KPIs and invoice queue."""
         kpis = self.compute_kpis()
-        invoices_list = []
+        invoices = self.get_all_invoices()
+        return {
+            "kpis": kpis,
+            "invoices": invoices,
+        }
+
+    # -------------------------------------------------------------------------
+    # Complete Reset
+    # -------------------------------------------------------------------------
+    def reset_all(self):
+        """Reset the entire database to the initial seed state."""
         with self._lock:
-            for inv in self.invoices.values():
-                rules = inv.get("rule_evaluations", [])
-                triggered = [r for r in rules if r.get("triggered")]
-                primary = triggered[0]["rule_code"] if triggered else None
-                invoices_list.append({
-                    "id": inv["id"],
-                    "invoice_number": inv["invoice_number"],
-                    "vendor_name": inv["vendor_name"],
-                    "po_reference": inv.get("po_reference", ""),
-                    "invoice_date": inv["invoice_date"],
-                    "grand_total": inv["grand_total"],
-                    "po_baseline_grand_total": inv["po_baseline_grand_total"],
-                    "total_variance_amount": inv["total_variance_amount"],
-                    "status": inv["status"],
-                    "triggered_rules_count": len(triggered),
-                    "primary_flag": primary,
-                    "confidence_score": inv.get("confidence_score", 1.0),
-                    "sha256_hash": inv.get("sha256_hash", ""),
-                })
-        return {"kpis": kpis, "invoices": invoices_list}
+            self._invoices = get_initial_seed_invoices()
+            self._purchase_orders = get_initial_seed_purchase_orders()
+            self._audit_logs = get_initial_seed_audit_logs()
 
 
-_LEDGER_INSTANCE: Optional[InMemoryLedger] = None
-
-
-def get_ledger() -> InMemoryLedger:
-    global _LEDGER_INSTANCE
-    if _LEDGER_INSTANCE is None:
-        _LEDGER_INSTANCE = InMemoryLedger()
-    return _LEDGER_INSTANCE
+# Singleton database instance
+db = Database()

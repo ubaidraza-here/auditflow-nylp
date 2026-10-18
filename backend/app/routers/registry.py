@@ -1,44 +1,107 @@
-"""Authorized ERP Vendors and Contracts Registry Router."""
+"""Registry Router for AuditFlow.
 
-from typing import Dict, List, Any
-from fastapi import APIRouter
-from app.data.database import get_ledger
+Endpoints:
+- GET /api/purchase-orders: Return active ERP Purchase Orders.
+- GET /api/audit-logs: Return chronological immutable compliance audit logs.
+- GET /api/audit-logs/export.csv: Downloadable CSV stream of the audit trail and ledger.
+"""
 
-router = APIRouter(prefix="/api/registry", tags=["Registry"])
+import csv
+import io
+from typing import List
+from fastapi import APIRouter, Response
+from app.data.database import db
+from app.models.schemas import PurchaseOrder, AuditLogEntry
 
-
-@router.get("/vendors")
-def get_authorized_vendors() -> List[Dict[str, Any]]:
-    """Returns unique authorized vendor profiles extracted from active ERP contracts."""
-    ledger = get_ledger()
-    pos = ledger.get_purchase_orders()
-    vendors: Dict[str, Dict[str, Any]] = {}
-    for po in pos:
-        v_name = po.get("vendor_name")
-        if v_name and v_name not in vendors:
-            vendors[v_name] = {
-                "vendor_name": v_name,
-                "vendor_ntn": po.get("vendor_ntn", ""),
-                "vendor_email": po.get("vendor_email", ""),
-                "bank_account_or_iban": po.get("bank_account_or_iban", ""),
-                "active_pos": [po.get("po_number")],
-                "authorized_spend_limit": po.get("authorized_grand_total", 0.0),
-            }
-        elif v_name:
-            vendors[v_name]["active_pos"].append(po.get("po_number"))
-            vendors[v_name]["authorized_spend_limit"] += po.get("authorized_grand_total", 0.0)
-    return list(vendors.values())
+router = APIRouter(tags=["Registry"])
 
 
-@router.get("/summary")
-def get_registry_summary() -> Dict[str, Any]:
-    """Returns ERP contract baseline metrics."""
-    ledger = get_ledger()
-    pos = ledger.get_purchase_orders()
-    total_authorized = sum(po.get("authorized_grand_total", 0.0) for po in pos)
-    unique_vendors = len(set(po.get("vendor_name") for po in pos if po.get("vendor_name")))
-    return {
-        "active_contracts_count": len(pos),
-        "authorized_vendors_count": unique_vendors,
-        "total_authorized_procurement_volume": round(total_authorized, 2),
-    }
+@router.get("/purchase-orders", response_model=List[PurchaseOrder])
+def get_purchase_orders() -> List[PurchaseOrder]:
+    """Retrieve all authorized Purchase Orders from the authoritative ERP baseline."""
+    pos = db.get_all_purchase_orders()
+    return [PurchaseOrder(**po) for po in pos]
+
+
+@router.get("/audit-logs", response_model=List[AuditLogEntry])
+def get_audit_logs() -> List[AuditLogEntry]:
+    """Retrieve all chronological compliance audit logs."""
+    logs = db.get_all_audit_logs()
+    return [AuditLogEntry(**log) for log in logs]
+
+
+@router.get("/audit-logs/export.csv")
+def export_audit_logs_csv() -> Response:
+    """Downloadable CSV stream of the entire immutable audit trail and invoice ledger."""
+    logs = db.get_all_audit_logs()
+    invoices = db.get_all_invoices()
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Enterprise Ledger Header
+    writer.writerow([
+        "record_type",
+        "record_id",
+        "timestamp_or_date",
+        "invoice_number",
+        "vendor_name",
+        "po_reference",
+        "actor_or_reviewer",
+        "action_or_decision",
+        "previous_status",
+        "status",
+        "financial_amount",
+        "discrepancy_count",
+        "file_hash_sha256",
+        "notes_or_explanation",
+    ])
+
+    # 1. Immutable Audit Trail Entries
+    for log in logs:
+        writer.writerow([
+            "AUDIT_LOG",
+            log.get("log_id", ""),
+            log.get("timestamp", ""),
+            log.get("invoice_number", ""),
+            log.get("vendor_name", ""),
+            "",
+            log.get("actor_name", ""),
+            log.get("action_type", ""),
+            log.get("previous_status", ""),
+            log.get("new_status", ""),
+            log.get("financial_impact_saved", 0.0),
+            0,
+            "",
+            log.get("justification_notes", ""),
+        ])
+
+    # 2. Active Invoice Ledger Records
+    for inv in invoices:
+        reviewer = (inv.get("decision_metadata") or {}).get("reviewer_name", "System Auditor")
+        decision = (inv.get("decision_metadata") or {}).get("decision_type", "AUDITED")
+        writer.writerow([
+            "INVOICE_LEDGER",
+            inv.get("invoice_id", ""),
+            inv.get("invoice_date", ""),
+            inv.get("invoice_number", ""),
+            inv.get("vendor_name", ""),
+            inv.get("po_reference", ""),
+            reviewer,
+            decision,
+            "PROCESSING",
+            inv.get("status", ""),
+            inv.get("grand_total", 0.0),
+            inv.get("discrepancy_count", 0),
+            inv.get("file_hash_sha256", ""),
+            inv.get("flag_reason", ""),
+        ])
+
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={
+            "Content-Disposition": 'attachment; filename="auditflow_immutable_ledger.csv"'
+        },
+    )
+

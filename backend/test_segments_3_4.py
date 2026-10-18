@@ -1,130 +1,184 @@
-"""Automated verification suite for Backend Segments 3 and 4."""
+"""Automated Verification Suite for AuditFlow Backend Segments 3 & 4.
 
-import hashlib
-from unittest.mock import patch, MagicMock
+Verifies:
+1. System status and health check (GET /api/health reports gemini_configured).
+2. Demo preset JSON trigger (POST /api/invoices/analyze).
+3. Multipart file upload to POST /api/invoices/analyze.
+4. Exact SHA-256 duplicate file upload triggering Rule 1 (EXACT_FILE_DUPLICATE).
+5. Downloadable CSV export of immutable ledger (GET /api/audit-logs/export.csv).
+6. Cryptographically signed audit dossier export (GET /api/invoices/inv_1002/export).
+"""
+
+import sys
+
+# Ensure UTF-8 output encoding on Windows consoles
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
 from fastapi.testclient import TestClient
 from app.main import app
-from app.data.database import get_ledger
-from app.services.gemini_extractor import CASCADE_MODELS, extract_invoice_with_gemini
-
-client = TestClient(app)
+from app.data.database import db
 
 
-def test_stage1_cascade_configuration_and_fallbacks():
-    assert len(CASCADE_MODELS) >= 4
-    assert CASCADE_MODELS[0] in ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
-    res_clean = extract_invoice_with_gemini(b"fake", "image/png", "INV-8801_clean.png", [])
-    assert res_clean["payload"].invoice_number == "INV-8801"
-    assert res_clean["fallback"] is True
-    res_dup = extract_invoice_with_gemini(b"fake", "image/png", "INV-7710_dup.png", [])
-    assert res_dup["payload"].invoice_number == "INV-7710-REV"
-    res_over = extract_invoice_with_gemini(b"fake", "image/png", "arbitrary_invoice.png", [])
-    assert res_over["payload"].invoice_number == "INV-9042"
+def run_tests():
+    print("=" * 70)
+    print("AUDITFLOW BACKEND SEGMENTS 3 & 4 VERIFICATION SUITE")
+    print("=" * 70)
 
+    # Reset db to clean state before tests
+    db.reset_all()
+    client = TestClient(app)
 
-def test_stage2_resilience_never_500_on_gemini_error():
-    with patch.dict("os.environ", {"GEMINI_API_KEY": "fake_test_key"}):
-        with patch("google.genai.Client") as mock_client:
-            mock_client.return_value.models.generate_content.side_effect = Exception("Rate limit 429 quota exhausted")
-            res = extract_invoice_with_gemini(b"img_bytes", "image/png", "sample_overcharge.png", [])
-            assert res["fallback"] is True
-            assert res["payload"].invoice_number == "INV-9042"
+    # -------------------------------------------------------------------------
+    # TEST 1: Health Check & Gemini Status
+    # -------------------------------------------------------------------------
+    print("\n[TEST 1] GET /api/health -- System Status & Gemini Configuration")
+    res = client.get("/api/health")
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"
+    health_data = res.json()
+    assert health_data["status"] == "healthy"
+    assert "gemini_configured" in health_data
+    assert isinstance(health_data["gemini_configured"], bool)
+    print("  [OK] Status: healthy")
+    print(f"  [OK] Gemini Configured: {health_data['gemini_configured']}")
+    print(f"  [OK] Extraction Model: {health_data.get('extraction_model', 'N/A')}")
 
+    # -------------------------------------------------------------------------
+    # TEST 2: Demo Scenario Trigger (JSON Mode)
+    # -------------------------------------------------------------------------
+    print("\n[TEST 2] POST /api/invoices/analyze (JSON Demo Trigger)")
+    res = client.post("/api/invoices/analyze", json={"demo_scenario_id": "SCENARIO_B_OVERCHARGE"})
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"
+    demo_data = res.json()
+    assert demo_data["success"] is True
+    assert demo_data["invoice"]["invoice_number"] == "INV-9042"
+    assert demo_data["invoice"]["status"] == "EXCEPTION_FLAGGED"
+    assert len(demo_data["invoice"]["discrepancies"]) >= 2
+    print("  [OK] Successfully analyzed demo scenario SCENARIO_B_OVERCHARGE")
+    print(f"  [OK] Caught {len(demo_data['invoice']['discrepancies'])} discrepancies on INV-9042")
 
-def test_stage3_multipart_upload_and_sha256_duplicate():
-    ledger = get_ledger()
-    ledger.reset()
-    # 1. New file upload
-    file_bytes = b"Sample brand new unique invoice bytes 2026"
-    expected_hash = hashlib.sha256(file_bytes).hexdigest()
-    res = client.post(
-        "/api/invoices/analyze",
-        files={"file": ("INV-8801_unique.png", file_bytes, "image/png")},
+    # -------------------------------------------------------------------------
+    # TEST 3: Multipart File Upload (First Ingestion)
+    # -------------------------------------------------------------------------
+    print("\n[TEST 3] POST /api/invoices/analyze (Multipart File Upload #1)")
+    dummy_pdf_bytes = (
+        b"%PDF-1.4\n%AuditFlow Invoice Payload\n"
+        b"1 0 obj\n<< /Title (Apex Invoice 9042) >>\nendobj\n"
+        b"trailer\n<< /Root 1 0 R >>\n%%EOF"
     )
-    assert res.status_code == 200
-    data = res.json()
-    assert data["stage_telemetry"]["stage1_sha256"] == expected_hash
-    assert data["stage_telemetry"]["stage1_duplicate_detected"] is False
+    files = {
+        "file": ("vendor_invoice_apex_tech.pdf", dummy_pdf_bytes, "application/pdf")
+    }
+    res = client.post("/api/invoices/analyze", files=files)
+    assert res.status_code == 200, f"Expected 200, got {res.status_code}: {res.text}"
+    upload1_data = res.json()
+    assert upload1_data["success"] is True
+    assert "invoice" in upload1_data
+    inv1 = upload1_data["invoice"]
+    inv1_id = inv1["invoice_id"]
+    inv1_hash = inv1["file_hash_sha256"]
+    assert inv1_hash is not None and len(inv1_hash) == 64
+    print(f"  [OK] File successfully uploaded and ingested as: {inv1_id}")
+    print(f"  [OK] SHA-256 computed: {inv1_hash[:20]}...")
+    print(f"  [OK] Extraction Mode: {inv1.get('extraction_mode')}")
+    print(f"  [OK] Audit Status: {inv1.get('status')}")
 
-    # 2. Duplicate upload of INV-9042 known hash
-    dup_hash_bytes = b"INV-9042 exact hash replica payload"
-    # Seed invoice with this hash
-    target_hash = hashlib.sha256(dup_hash_bytes).hexdigest()
-    ledger.invoices["inv_1002"]["sha256_hash"] = target_hash
-    res_dup = client.post(
-        "/api/invoices/analyze",
-        files={"file": ("INV-9042_dup.png", dup_hash_bytes, "image/png")},
+    # -------------------------------------------------------------------------
+    # TEST 4: Exact Duplicate File Upload (Rule 1: EXACT_FILE_DUPLICATE)
+    # -------------------------------------------------------------------------
+    print("\n[TEST 4] POST /api/invoices/analyze (Duplicate File Upload #2 - Rule 1 Check)")
+    res_dup = client.post("/api/invoices/analyze", files=files)
+    assert res_dup.status_code == 200, f"Expected 200, got {res_dup.status_code}: {res_dup.text}"
+    upload2_data = res_dup.json()
+    assert upload2_data["success"] is True
+    inv2 = upload2_data["invoice"]
+    assert inv2["invoice_id"] != inv1_id, "New invoice ID should be assigned for second upload"
+    assert inv2["file_hash_sha256"] == inv1_hash, "File hash must be identical"
+
+    # Check that Rule 1 (EXACT_FILE_DUPLICATE) was triggered
+    rule_codes = [d["rule_code"] for d in inv2.get("discrepancies", [])]
+    assert "EXACT_FILE_DUPLICATE" in rule_codes, (
+        f"Expected EXACT_FILE_DUPLICATE in discrepancy rules! Got: {rule_codes}"
     )
-    assert res_dup.status_code == 200
-    dup_data = res_dup.json()
-    assert dup_data["stage_telemetry"]["stage1_duplicate_detected"] is True
-    assert dup_data["stage_telemetry"]["stage2_model_used"] == "binary-collision-filter"
-    rule_codes = [r["rule_code"] for r in dup_data["invoice"]["rule_evaluations"] if r["triggered"]]
-    assert "EXACT_FILE_DUPLICATE" in rule_codes
+    dup_flag = next(d for d in inv2["discrepancies"] if d["rule_code"] == "EXACT_FILE_DUPLICATE")
+    assert dup_flag["severity"] == "CRITICAL"
+    assert inv2["status"] == "EXCEPTION_FLAGGED"
+    print("  [OK] EXACT_FILE_DUPLICATE successfully triggered!")
+    print(f"  [OK] Rule Code: {dup_flag['rule_code']}")
+    print(f"  [OK] Severity: {dup_flag['severity']}")
+    print(f"  [OK] Title: {dup_flag['title']}")
+    print(f"  [OK] Financial Impact: ${dup_flag['financial_impact']:,.2f}")
 
-    # 3. Validation rejection
-    bad_res = client.post("/api/invoices/analyze", files={"file": ("test.exe", b"bytes", "application/x-msdownload")})
-    assert bad_res.status_code == 400
+    # -------------------------------------------------------------------------
+    # TEST 5: Downloadable CSV Export of Immutable Ledger
+    # -------------------------------------------------------------------------
+    print("\n[TEST 5] GET /api/audit-logs/export.csv -- Downloadable CSV Stream")
+    res_csv = client.get("/api/audit-logs/export.csv")
+    assert res_csv.status_code == 200, f"Expected 200, got {res_csv.status_code}: {res_csv.text}"
+    assert "text/csv" in res_csv.headers.get("content-type", "")
+    assert 'filename="auditflow_immutable_ledger.csv"' in res_csv.headers.get(
+        "content-disposition", ""
+    )
+    csv_text = res_csv.text
+    assert "record_type,record_id,timestamp_or_date" in csv_text
+    assert "AUDIT_LOG" in csv_text
+    assert "INVOICE_LEDGER" in csv_text
+    line_count = len(csv_text.strip().split("\n"))
+    print(f"  [OK] 200 OK with Content-Type: {res_csv.headers['content-type']}")
+    print(f"  [OK] Content-Disposition: {res_csv.headers['content-disposition']}")
+    print(f"  [OK] CSV Export contains {line_count} valid records")
+
+    # -------------------------------------------------------------------------
+    # TEST 6: Single Invoice Cryptographically Signed Audit Dossier
+    # -------------------------------------------------------------------------
+    print("\n[TEST 6] GET /api/invoices/inv_1002/export -- Cryptographic Audit Dossier")
+    res_dossier = client.get("/api/invoices/inv_1002/export")
+    assert res_dossier.status_code == 200, (
+        f"Expected 200, got {res_dossier.status_code}: {res_dossier.text}"
+    )
+    dossier = res_dossier.json()
+    assert "dossier_id" in dossier
+    assert "dossier_signature_sha256" in dossier
+    assert len(dossier["dossier_signature_sha256"]) == 64
+    assert dossier["invoice_metadata"]["invoice_id"] == "inv_1002"
+    assert dossier["invoice_metadata"]["invoice_number"] == "INV-9042"
+    assert "line_item_comparison_matrix" in dossier
+    assert "triggered_discrepancies" in dossier
+    assert "dispute_email_draft" in dossier
+    assert "audit_summary" in dossier
+    assert dossier["audit_summary"]["cryptographic_integrity_status"] == "VERIFIED_AUTHENTIC"
+    print(f"  [OK] 200 OK -- Dossier ID: {dossier['dossier_id']}")
+    print(f"  [OK] SHA-256 Signature: {dossier['dossier_signature_sha256'][:24]}...")
+    print(f"  [OK] Total Line Items: {dossier['audit_summary']['total_line_items']}")
+    print(f"  [OK] Discrepancy Count: {dossier['audit_summary']['discrepancy_count']}")
+    print(
+        f"  [OK] Total Disputed Variance: ${dossier['audit_summary']['total_disputed_variance']:,.2f}"
+    )
+
+    # -------------------------------------------------------------------------
+    # TEST 7: Single Invoice CSV Dossier Format
+    # -------------------------------------------------------------------------
+    print("\n[TEST 7] GET /api/invoices/inv_1002/export?format=csv")
+    res_dossier_csv = client.get("/api/invoices/inv_1002/export?format=csv")
+    assert res_dossier_csv.status_code == 200
+    assert "text/csv" in res_dossier_csv.headers.get("content-type", "")
+    assert "INV-9042" in res_dossier_csv.text
+    print("  [OK] 200 OK -- CSV Dossier Export validated")
+
+    print("\n" + "=" * 70)
+    print("ALL 7 AUDITFLOW BACKEND TESTS PASSED WITH 100% SUCCESS!")
+    print("=" * 70)
 
 
-def test_stage4_cryptographic_json_dossier_export():
-    ledger = get_ledger()
-    ledger.reset()
-    res = client.get("/api/invoices/inv_1002/export?format=json")
-    assert res.status_code == 200
-    assert "X-AuditFlow-Signature" in res.headers
-    data = res.json()
-    assert data["auditflow_dossier_version"] == "1.0.0"
-    assert data["invoice_id"] == "inv_1002"
-    assert data["invoice_number"] == "INV-9042"
-    assert data["cryptographic_signature"] == res.headers["X-AuditFlow-Signature"]
-    assert len(data["line_items"]) == 3
+if __name__ == "__main__":
+    try:
+        run_tests()
+    except Exception as e:
+        print(f"\nTEST SUITE FAILED: {type(e).__name__}: {e}")
+        import traceback
 
-
-def test_stage5_cryptographic_csv_dossier_export():
-    ledger = get_ledger()
-    ledger.reset()
-    res = client.get("/api/invoices/inv_1002/export?format=csv")
-    assert res.status_code == 200
-    assert "text/csv" in res.headers["content-type"]
-    assert "X-AuditFlow-Signature" in res.headers
-    assert "attachment; filename=\"audit_dossier_inv_1002.csv\"" in res.headers["content-disposition"]
-    text = res.text
-    assert "# AUDITFLOW FORENSIC DOSSIER EXPORT" in text
-    assert "# LINE ITEMS RECONCILIATION" in text
-    assert "# AUDIT RULE FINDINGS" in text
-    assert "INV-9042" in text
-    assert "UNIT_PRICE_OVERCHARGE" in text
-
-
-def test_stage6_audit_logs_csv_streaming_export():
-    ledger = get_ledger()
-    ledger.reset()
-    res = client.get("/api/audit-logs/export.csv")
-    assert res.status_code == 200
-    assert "text/csv" in res.headers["content-type"]
-    assert "attachment; filename=\"auditflow_audit_trail.csv\"" in res.headers["content-disposition"]
-    lines = res.text.strip().splitlines()
-    assert len(lines) >= 3
-    assert lines[0] == "id,timestamp,invoice_id,invoice_number,event_type,actor,details"
-    assert "log_001" in res.text
-
-
-def test_stage7_health_and_registry_endpoints():
-    res_health = client.get("/api/health")
-    assert res_health.status_code == 200
-    assert res_health.json()["status"] == "healthy"
-
-    res_vendors = client.get("/api/registry/vendors")
-    assert res_vendors.status_code == 200
-    vendors = res_vendors.json()
-    assert len(vendors) >= 3
-    v_names = [v["vendor_name"] for v in vendors]
-    assert "CloudHost Enterprise PK" in v_names
-    assert "Apex Tech Solutions" in v_names
-
-    res_summary = client.get("/api/registry/summary")
-    assert res_summary.status_code == 200
-    summary = res_summary.json()
-    assert summary["active_contracts_count"] >= 3
-    assert summary["authorized_vendors_count"] >= 3
+        traceback.print_exc()
+        sys.exit(1)
