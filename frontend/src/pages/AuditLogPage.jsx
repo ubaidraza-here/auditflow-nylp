@@ -4,9 +4,13 @@ import { exportLedgerCsv } from '../utils/exportUtils';
 
 export default function AuditLogPage() {
   const [logs, setLogs] = useState([]);
+  const [invoices, setInvoices] = useState([]);
 
   useEffect(() => {
-    apiClient.getAuditLogs().then((res) => setLogs(res || []));
+    Promise.all([apiClient.getAuditLogs(), apiClient.getDashboardSummary()]).then(([l, s]) => {
+      setLogs(l || []);
+      setInvoices(s?.invoices || []);
+    });
   }, []);
 
   const formatCurrency = (amt) =>
@@ -22,22 +26,16 @@ export default function AuditLogPage() {
               <span className="material-symbols-outlined text-[20px]">verified_user</span>
             </div>
             <div>
-              <h1 className="text-base font-semibold text-[#0A2540] tracking-tight">
-                Immutable Forensic Audit Trail
-              </h1>
-              <p className="text-xs text-[#64748B]">
-                Append-Only Cryptographic Log
-              </p>
+              <h1 className="text-base font-semibold text-[#0A2540] tracking-tight">Immutable Forensic Audit Trail</h1>
+              <p className="text-xs text-[#64748B]">Append-Only Cryptographic Log</p>
             </div>
           </div>
           <div className="flex items-center gap-3 text-xs">
             <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#F8FAFC] text-[#334155] border-[#E2E8F0]">
               <span className="w-1.5 h-1.5 rounded-full bg-[#64748B]" />
-              <span className="font-mono">Block Height: #44,192</span>
+              <span className="font-mono">Block Height: #{(44190 + logs.length).toLocaleString()}</span>
             </span>
-            <span className="font-sans text-[#64748B] hidden sm:inline">
-              {logs.length} Committed Entries
-            </span>
+            <span className="font-sans text-[#64748B] hidden sm:inline">{logs.length} Committed Entries</span>
             <button
               type="button"
               onClick={() => exportLedgerCsv([], logs)}
@@ -47,7 +45,6 @@ export default function AuditLogPage() {
               <span>Export CSV</span>
             </button>
           </div>
-
         </section>
 
         {/* Audit Log Table Card */}
@@ -66,60 +63,72 @@ export default function AuditLogPage() {
               </thead>
               <tbody className="divide-y divide-[#F1F5F9] text-xs text-[#0F172A]">
                 {logs.map((log) => {
-                  const isDisputed = log.new_status === 'REJECTED_DISPUTED' || log.action_type === 'REJECT_DISPUTE';
-                  const isOverride = log.new_status === 'APPROVED_WITH_OVERRIDE' || log.action_type === 'APPROVE_WITH_OVERRIDE';
-                  const hasLeakage = (log.financial_impact_saved || 0) > 0;
+                  const match = invoices.find((i) =>
+                    (i.invoice_number && log.invoice_number && i.invoice_number.toUpperCase() === log.invoice_number.toUpperCase()) ||
+                    (i.invoice_id && log.invoice_id && i.invoice_id === log.invoice_id)
+                  );
+                  const isDup = String(log.invoice_number || '').includes('-REV') || String(match?.flag_reason || '').toUpperCase().includes('DUPLICATE');
+                  const invLeak = isDup ? Number(match?.grand_total || 1200) : (match?.discrepancies?.reduce((s, d) => s + (Number(d.financial_impact || d.variance_amount) || 0), 0) || Math.max(0, Number(match?.total_variance_amount || 0)));
+                  const effectiveLeakage = Number(log.prevented_leakage ?? log.financial_impact_saved ?? log.financial_impact ?? invLeak) || 0;
+
+                  const actor = log.actor_name || log.actor || 'AuditFlow AI Engine';
+                  const isSystemActor = actor.includes('Engine') || actor.includes('System') || actor.toLowerCase().includes('auditflow');
+                  const logAction = (log.action_type || log.event_type || '').toUpperCase();
+                  const logStatus = (log.new_status || log.status || match?.status || '').toUpperCase();
+
+                  const isHumanDispute = !isSystemActor && (['REJECTED_DISPUTED', 'DISPUTED', 'REJECT', 'REJECT_DISPUTE', 'DISPUTE'].some(k => logAction.includes(k) || logStatus.includes(k)));
+                  const isHumanOverride = !isSystemActor && (['APPROVED_WITH_OVERRIDE', 'APPROVED_OVERRIDE', 'OVERRIDE', 'APPROVE_WITH_OVERRIDE'].some(k => logAction.includes(k) || logStatus.includes(k)));
+                  const isSystemIntercepted = isSystemActor && (['FLAGGED_DISCREPANCY', 'EXCEPTION_DETECTED', 'FLAGGED'].includes(logAction) || ['EXCEPTION_FLAGGED', 'NEEDS_REVIEW', 'FLAGGED'].includes(logStatus) || effectiveLeakage > 0);
+                  const isCleanApproved = !isHumanDispute && !isHumanOverride && !isSystemIntercepted;
 
                   return (
-                    <tr key={log.log_id} className="hover:bg-[#F8FAFC] transition-colors">
+                    <tr key={log.log_id || log.id} className="hover:bg-[#F8FAFC] transition-colors">
                       <td className="py-3.5 px-4 font-mono">
-                        <div className="font-semibold text-[#0A2540]">{log.log_id}</div>
-                        <div className="text-[11px] text-[#64748B]">
-                          {new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} UTC
-                        </div>
+                        <div className="font-semibold text-[#0A2540]">{log.log_id || log.id}</div>
+                        <div className="text-[11px] text-[#64748B]">{new Date(log.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })} UTC</div>
                       </td>
-
                       <td className="py-3.5 px-4">
-                        <div className="font-sans font-medium text-[#0F172A]">{log.actor_name || 'Autonomous Agent'}</div>
-                        <div className="font-mono text-[11px] text-[#64748B]">CONTROLLER LEVEL 3</div>
+                        <div className="font-sans font-medium text-[#0F172A]">{actor}</div>
+                        <div className="font-mono text-[11px] text-[#64748B]">{isSystemActor ? 'AUTOMATED RUNTIME' : 'CONTROLLER LEVEL 3'}</div>
                       </td>
-
                       <td className="py-3.5 px-4 text-[11px]">
                         <span className="font-mono font-semibold text-[#0A2540]">{log.invoice_number}</span>
-                        <span className="font-sans text-[#64748B]"> — {log.vendor_name}</span>
+                        <span className="font-sans text-[#64748B]"> — {log.vendor_name || match?.vendor_name}</span>
                       </td>
 
                       <td className="py-3.5 px-4">
-                        {isDisputed && (
-                          <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#FEF2F2] text-[#991B1B] border-[#FECACA]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#DC2626]" />
-                            <span>Disputed: Hold Placed</span>
+                        {isHumanDispute && (
+                          <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-amber-50 text-amber-800 border-amber-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-amber-600" /><span>Disputed &amp; Blocked</span>
                           </span>
                         )}
-                        {isOverride && (
-                          <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#FFFBEB] text-[#92400E] border-[#FDE68A]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#D97706]" />
-                            <span>Override Released</span>
+                        {isHumanOverride && (
+                          <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-sky-50 text-sky-800 border-sky-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-sky-600" /><span>Auditor Override</span>
                           </span>
                         )}
-                        {!isDisputed && !isOverride && (
+                        {isSystemIntercepted && (
+                          <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-rose-50 text-rose-700 border-rose-200">
+                            <span className="w-1.5 h-1.5 rounded-full bg-rose-600" /><span>Exception Intercepted</span>
+                          </span>
+                        )}
+                        {isCleanApproved && (
                           <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#F0FDF4] text-[#166534] border-[#BBF7D0]">
-                            <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A]" />
-                            <span>Auto-Approved 3-Way</span>
+                            <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A]" /><span>Auto-Approved 3-Way</span>
                           </span>
                         )}
                       </td>
 
                       <td className="py-3.5 px-4 text-right font-sans tabular-nums font-semibold whitespace-nowrap">
-                        {hasLeakage ? (
-                          <span className="text-[#166534]">+{formatCurrency(log.financial_impact_saved)}</span>
+                        {effectiveLeakage > 0 ? (
+                          <span className="text-emerald-700 font-bold">+{formatCurrency(effectiveLeakage)}</span>
                         ) : (
                           <span className="text-[#94A3B8] font-normal">$0.00</span>
                         )}
                       </td>
 
                       <td className="py-3.5 px-4 text-[11px] font-sans text-[#64748B] max-w-xs truncate">
-                        {log.justification_notes || 'Automated 3-way reconciliation passed.'}
+                        {log.justification_notes || log.details || (isSystemIntercepted ? `Intercepted exception; ${formatCurrency(effectiveLeakage)} blocked.` : 'Automated 3-way reconciliation passed.')}
                       </td>
                     </tr>
                   );

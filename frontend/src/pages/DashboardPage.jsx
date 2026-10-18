@@ -27,9 +27,12 @@ export default function DashboardPage() {
   const isUnresolvedFlagged = (i) =>
     ['EXCEPTION_FLAGGED', 'NEEDS_REVIEW', 'FLAGGED'].includes(i.status);
   const isCleanMatch = (i) =>
-    ['VERIFIED_MATCH', 'MATCHED_APPROVED', 'APPROVED', 'AUTO_APPROVED'].includes(i.status);
+    ['MATCHED_APPROVED', 'AUTO_APPROVED', 'APPROVED', 'VERIFIED_MATCH', 'APPROVED_CLEAN', 'Approved Clean'].includes(i.status) &&
+    (i.discrepancies?.length || 0) === 0 &&
+    Math.abs(Number(i.total_variance_amount || i.variance_amount || 0)) === 0;
   const isArchived = (i) =>
-    ['APPROVED_CLEAN', 'APPROVED_WITH_OVERRIDE', 'REJECTED_DISPUTED', 'REJECTED', 'ARCHIVED'].includes(i.status);
+    ['APPROVED_WITH_OVERRIDE', 'APPROVED_OVERRIDE', 'REJECTED_DISPUTED', 'DISPUTED', 'REJECTED', 'ARCHIVED'].includes(i.status) ||
+    Boolean(i.decision_metadata && !isCleanMatch(i));
 
   const tabCounts = useMemo(() => {
     const list = data.invoices || [];
@@ -62,9 +65,15 @@ export default function DashboardPage() {
     });
   }, [data.invoices, activeTab, search]);
 
-  const handleResetFilters = () => {
+  const handleResetFilters = async () => {
     setActiveTab('all');
     setSearch('');
+    try {
+      const fresh = await apiClient.resetDashboardState();
+      if (fresh) setData(fresh);
+    } catch (err) {
+      console.error('Failed to reset dashboard state:', err);
+    }
   };
 
   const handleInspect = (invoiceId) => {

@@ -2,9 +2,9 @@
 
 export const MOCK_KPIS = {
   total_audited_volume: 17500.0,
-  prevented_leakage_amount: 1650.0,
+  prevented_leakage_amount: 4450.0,
   pending_exceptions_count: 2,
-  clean_match_rate_percent: 16.7,
+  clean_match_rate_percent: 33.3,
 };
 
 export function computeMockKpis(invoices) {
@@ -19,38 +19,68 @@ export function computeMockKpis(invoices) {
       inv.status === 'NEEDS_REVIEW' ||
       inv.status === 'FLAGGED'
   );
-  const preventedLeakage = flagged.reduce((acc, inv) => {
+
+  const preventedLeakage = list.reduce((acc, inv) => {
+    const status = String(inv.status || inv.new_status || '').toUpperCase();
+    if (['APPROVED_WITH_OVERRIDE', 'APPROVED_OVERRIDE', 'OVERRIDE'].includes(status)) {
+      return acc;
+    }
+
+    const isFlaggedOrDisputed = [
+      'EXCEPTION_FLAGGED', 'NEEDS_REVIEW', 'FLAGGED',
+      'REJECTED_DISPUTED', 'DISPUTED', 'REJECTED', 'REJECT', 'DISPUTE MEMO FILED'
+    ].some((k) => status.includes(k)) || Boolean(inv.flag_reason) || Boolean(inv.discrepancies?.length > 0);
+
+    if (!isFlaggedOrDisputed) return acc;
+
+    const invNum = String(inv.invoice_number || '').toUpperCase();
+    const flagR = String(inv.flag_reason || '').toUpperCase();
+    const discs = inv.discrepancies || [];
+    const isDup =
+      invNum.includes('-REV') ||
+      flagR.includes('DUPLICATE') ||
+      discs.some((d) => String(d.rule_code || '').toUpperCase().includes('DUPLICATE') || String(d.title || '').toUpperCase().includes('DUPLICATE'));
+
+    if (isDup) {
+      const total = Number(inv.grand_total || inv.billed_amount || 0);
+      const discSum = discs.reduce((s, d) => s + (Number(d.financial_impact || d.variance_amount) || 0), 0);
+      const varVal = Number(inv.total_variance_amount || inv.variance_amount || 0);
+      return acc + Math.max(total, discSum, varVal);
+    }
+
+    let discSum = 0;
     if (Array.isArray(inv.discrepancies) && inv.discrepancies.length > 0) {
-      const discSum = inv.discrepancies.reduce(
+      discSum = inv.discrepancies.reduce(
         (sum, d) => sum + (Number(d.financial_impact || d.variance_amount) || 0),
         0
       );
-      if (discSum > 0) return acc + discSum;
     }
-    if (inv.total_variance_amount != null && Number(inv.total_variance_amount) > 0) {
-      return acc + Number(inv.total_variance_amount);
+    const varVal = Math.abs(Number(inv.total_variance_amount ?? inv.variance_amount ?? 0));
+    let leakageVal = Math.max(discSum, varVal);
+    if (leakageVal <= 0) {
+      const billed = Number(inv.grand_total || inv.billed_amount || 0);
+      const po = Number(
+        inv.matched_purchase_order?.authorized_total ||
+        inv.po_baseline_grand_total ||
+        billed
+      );
+      leakageVal = Math.max(0, billed - po);
     }
-    const billed = Number(inv.grand_total || inv.billed_amount || 0);
-    const po = Number(
-      inv.matched_purchase_order?.authorized_total ||
-      inv.po_baseline_grand_total ||
-      billed
-    );
-    return acc + Math.max(0, billed - po);
+    return acc + leakageVal;
   }, 0);
+
   const cleanInvoices = list.filter(
     (inv) =>
-      inv.status === 'VERIFIED_MATCH' ||
-      inv.status === 'MATCHED_APPROVED' ||
-      inv.status === 'APPROVED' ||
-      inv.status === 'AUTO_APPROVED'
+      ['VERIFIED_MATCH', 'MATCHED_APPROVED', 'APPROVED', 'AUTO_APPROVED', 'APPROVED_CLEAN', 'Approved Clean'].includes(inv.status) &&
+      (inv.discrepancies?.length || 0) === 0 &&
+      Math.abs(Number(inv.total_variance_amount || inv.variance_amount || 0)) === 0
   );
   const cleanMatchRate = list.length > 0 ? (cleanInvoices.length / list.length) * 100 : 0;
   return {
-    total_audited_volume: totalVolume,
-    prevented_leakage_amount: preventedLeakage,
+    total_audited_volume: Math.round(totalVolume * 100) / 100,
+    prevented_leakage_amount: Math.round(preventedLeakage * 100) / 100,
     pending_exceptions_count: flagged.length,
-    clean_match_rate_percent: cleanMatchRate,
+    clean_match_rate_percent: Math.round(cleanMatchRate * 10) / 10,
   };
 }
 
@@ -450,6 +480,8 @@ AuditFlow Institutional Compliance`,
     status: "EXCEPTION_FLAGGED",
     extraction_confidence: 0.94,
     discrepancy_count: 1,
+    total_variance_amount: 1200.0,
+    variance_amount: 1200.0,
     flag_reason: "Critical: Potential Duplicate of Paid Invoice #INV-7710",
     file_hash_sha256: "bc95d6f1a8c0ef783b9e4a3b1109012354cfa228163f87a2df85d8e7c85885e3",
     file_url: "/uploads/prime_office_inv_7710_rev.pdf",
@@ -485,7 +517,7 @@ AuditFlow Institutional Compliance`,
         invoice_unit_price: 300.0,
         po_line_total: 1200.0,
         invoice_line_total: 1200.0,
-        variance_amount: 0.0,
+        variance_amount: 1200.0,
         line_status: "DUPLICATE",
       },
     ],
@@ -726,6 +758,9 @@ export const MOCK_AUDIT_LOGS = [
     previous_status: "PROCESSING",
     new_status: "EXCEPTION_FLAGGED",
     financial_impact_saved: 450.0,
+    prevented_leakage: 450.0,
+    financial_impact: 450.0,
+    variance_amount: 450.0,
     justification_notes: "Deterministic auditor caught $400 unit price variance on Dell monitors + $50 unapproved fee.",
   },
   {
