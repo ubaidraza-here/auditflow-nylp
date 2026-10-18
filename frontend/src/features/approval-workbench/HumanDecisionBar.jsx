@@ -1,137 +1,118 @@
 import React, { useState } from 'react';
-import { UserCheck, ShieldAlert, CheckCircle, Send, RotateCcw, FileText } from 'lucide-react';
-import StatusTag from '../../components/common/StatusTag';
+import { Send } from 'lucide-react';
+export default function HumanDecisionBar({ invoice, onApproveClean, onOpenDispute, onOverrideApprove, onExport }) {
+  const [reason, setReason] = useState('');
+  const status = invoice?.status;
+  const isTerminal =
+    status === 'APPROVED_CLEAN' ||
+    status === 'APPROVED_WITH_OVERRIDE' ||
+    status === 'REJECTED_DISPUTED';
 
-export default function HumanDecisionBar({
-  invoice,
-  onApproveClean,
-  onApproveOverride,
-  onOpenDispute,
-  onResetState,
-  onViewAuditTrail
-}) {
-  const [overrideReason, setOverrideReason] = useState('');
-  const [showOverrideInput, setShowOverrideInput] = useState(false);
+  const handleOverride = () => {
+    if (!reason.trim()) {
+      alert('Mandatory justification note is required before overriding flagged exceptions.');
+      return;
+    }
+    onOverrideApprove(reason.trim());
+    setReason('');
+  };
 
-  const isDecided = ['APPROVED_CLEAN', 'APPROVED_WITH_OVERRIDE', 'REJECTED_DISPUTED'].includes(invoice?.status);
-
-  if (isDecided) {
+  if (isTerminal) {
     return (
-      <div className="bg-white border border-[#E2E8F0] rounded-[6px] p-4 shadow-xs">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between pb-3 mb-3 border-b border-[#F1F5F9] gap-2">
-          <div className="flex items-center gap-2">
-            <span className="font-mono text-xs font-bold text-[#0A2540] uppercase tracking-wider">
-              Forensic Disposition Recorded
-            </span>
-            <StatusTag status={invoice.status} />
+      <div className="bg-white border border-[#CBD5E1] rounded-lg p-4 shadow-sm flex flex-col gap-3 font-sans">
+        <div className="flex flex-wrap items-center justify-between text-xs border-b border-[#F1F5F9] pb-2 text-[#64748B]">
+          <div className="flex items-center gap-1.5">
+            <span className="material-symbols-outlined text-[16px] text-[#0A2540]">lock</span>
+            <span className="text-[#0A2540] font-semibold">Terminal Disposition Committed</span>
+            <span>— {status}</span>
           </div>
-          <span className="text-[11px] font-mono text-[#64748B]">
-            Reviewed by {invoice.reviewer_name || 'Ubaid Raza'}
-          </span>
+          <div className="font-mono text-[11px] text-[#059669] font-semibold">
+            Immutable Ledger Record Committed
+          </div>
         </div>
-
-        {invoice.override_reason && (
-          <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-[4px] p-2.5 mb-3 text-xs text-[#334155]">
-            <span className="font-semibold text-[#0A2540]">Auditor Override Justification: </span>
-            {invoice.override_reason}
-          </div>
-        )}
-
-        {invoice.dispute_memo && (
-          <div className="bg-[#FEF2F2] border border-[#FECACA] rounded-[4px] p-2.5 mb-3 text-xs text-[#991B1B]">
-            <span className="font-semibold">Vendor Credit Memo Demand: </span>
-            Formal notice dispatched to billing@apextech.com.
-          </div>
-        )}
-
-        <div className="flex items-center justify-between gap-2 pt-1">
-          <button
-            onClick={onResetState}
-            className="text-xs font-semibold text-[#991B1B] hover:text-[#7F1D1D] flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span>Reset Demo State</span>
-          </button>
-          <button
-            onClick={onViewAuditTrail}
-            className="bg-[#0A2540] hover:bg-[#1E3A5F] text-white text-xs font-semibold px-4 py-2 rounded-[4px] shadow-xs flex items-center gap-1.5 transition-colors cursor-pointer"
-          >
-            <span>View Immutable Audit Trail</span>
-            <FileText className="w-3.5 h-3.5" />
-          </button>
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <p className="text-xs text-[#475569]">
+            Case record is locked and cryptographically written to the audit trail.
+          </p>
+          {onExport && (
+            <button
+              type="button"
+              onClick={onExport}
+              className="px-3.5 py-1.5 bg-[#F8FAFC] hover:bg-[#F1F5F9] border border-[#CBD5E1] text-[#0A2540] rounded-md text-xs font-semibold transition-colors cursor-pointer"
+            >
+              Export JSON Package
+            </button>
+          )}
         </div>
       </div>
     );
   }
 
-  const isFlagged = invoice?.status === 'EXCEPTION_FLAGGED';
-
   return (
-    <div className="bg-white border border-[#E2E8F0] rounded-[6px] p-4 shadow-xs">
-      <div className="flex items-center justify-between pb-3 mb-3 border-b border-[#F1F5F9]">
-        <div className="flex items-center gap-2">
-          <UserCheck className="w-4 h-4 text-[#0A2540]" />
-          <span className="font-mono text-xs font-bold text-[#0A2540] uppercase tracking-wider">
-            Human-in-the-Loop Auditor Decision Console
-          </span>
+    <div className="bg-white border border-[#CBD5E1] rounded-lg p-4 shadow-sm flex flex-col gap-3 font-sans">
+      {/* Reviewer Credential Row */}
+      <div className="flex flex-wrap items-center justify-between text-xs border-b border-[#F1F5F9] pb-2 text-[#64748B]">
+        <div className="flex items-center gap-1.5">
+          <span className="material-symbols-outlined text-[16px] text-[#0A2540]">badge</span>
+          <span className="text-[#0A2540] font-semibold">Ubaid Raza</span>
+          <span>• Senior AP Auditor</span>
         </div>
-        <span className="text-[11px] font-mono text-[#64748B]">
-          Auditor: <strong>Ubaid Raza</strong> (Controller)
-        </span>
+        <div className="flex items-center gap-1 font-mono text-[11px]">
+          <span className="material-symbols-outlined text-[13px] text-[#059669]">lock_clock</span>
+          <span>Session: 2026-10-14 14:32:08 UTC</span>
+        </div>
       </div>
 
-      {isFlagged ? (
-        <div className="space-y-3">
-          <div className="flex flex-col sm:flex-row items-center justify-between gap-3">
+      {status === 'VERIFIED_MATCH' ? (
+        <div className="space-y-2">
+          <button
+            type="button"
+            onClick={onApproveClean}
+            className="w-full bg-[#059669] hover:bg-[#047857] text-white px-5 py-2.5 rounded-lg font-sans text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer"
+          >
+            <span className="material-symbols-outlined text-[16px]">verified</span>
+            <span>Approve Clean Invoice &amp; Release to ERP →</span>
+          </button>
+          <p className="font-mono text-[10px] text-[#64748B] text-center">
+            Zero-touch 3-way match confirmed against contracted PO. Immediate release to treasury payment run.
+          </p>
+        </div>
+      ) : (
+        <>
+          {/* Audit Note Justification & Override */}
+          <div className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="text"
+              value={reason}
+              onChange={(e) => setReason(e.target.value)}
+              placeholder="Mandatory justification note before override or disbursement release..."
+              className="bg-[#F8FAFC] border border-[#CBD5E1] text-xs text-[#0A2540] placeholder-[#94A3B8] px-3 py-2 rounded-md flex-1 font-sans focus:bg-white focus:outline-none focus:border-[#0A2540] transition-colors"
+            />
             <button
-              onClick={() => setShowOverrideInput(!showOverrideInput)}
-              className="w-full sm:w-auto border border-[#CBD5E1] hover:border-[#0A2540] bg-white text-[#334155] text-xs font-semibold px-4 py-2 rounded-[4px] shadow-2xs transition-colors cursor-pointer"
+              type="button"
+              onClick={handleOverride}
+              className="border border-[#0A2540] text-[#0A2540] hover:bg-[#F1F5F9] px-3.5 py-2 font-sans text-xs font-semibold rounded-md whitespace-nowrap transition-colors cursor-pointer"
             >
-              {showOverrideInput ? 'Hide Override Console' : 'Approve with Override Justification...'}
+              Approve with Override
             </button>
+          </div>
+
+          {/* Primary High-Contrast Disputed Action */}
+          <div>
             <button
+              type="button"
               onClick={onOpenDispute}
-              className="w-full sm:w-auto bg-[#9F1239] hover:bg-[#881337] text-white text-xs font-semibold px-5 py-2 rounded-[4px] shadow-sm flex items-center justify-center gap-2 transition-colors cursor-pointer"
+              className="w-full bg-[#9F1239] hover:bg-[#881337] text-white px-5 py-2.5 rounded-lg font-sans text-xs font-semibold flex items-center justify-center gap-2 shadow-sm transition-colors cursor-pointer"
             >
               <span>Reject &amp; Draft Vendor Credit Memo</span>
               <Send className="w-3.5 h-3.5" />
             </button>
-          </div>
 
-          {showOverrideInput && (
-            <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-[4px] p-3 space-y-2 animate-in fade-in duration-100">
-              <label className="text-[11px] font-mono text-[#475569] font-semibold block">
-                MANDATORY STATUTORY OVERRIDE JUSTIFICATION (MIN 10 CHARACTERS):
-              </label>
-              <textarea
-                rows="2"
-                placeholder="e.g. Approved by VP Logistics for emergency supply chain expedited freight."
-                value={overrideReason}
-                onChange={(e) => setOverrideReason(e.target.value)}
-                className="w-full text-xs p-2.5 rounded border border-[#CBD5E1] bg-white focus:outline-none focus:border-[#0A2540]"
-              />
-              <div className="flex justify-end">
-                <button
-                  disabled={overrideReason.trim().length < 10}
-                  onClick={() => onApproveOverride(overrideReason)}
-                  className="bg-[#0A2540] hover:bg-[#1E3A5F] disabled:opacity-40 text-white text-xs font-semibold px-4 py-1.5 rounded-[4px] shadow-xs cursor-pointer"
-                >
-                  Confirm Statutory Override &amp; Clear
-                </button>
-              </div>
-            </div>
-          )}
-        </div>
-      ) : (
-        <div className="flex justify-end">
-          <button
-            onClick={onApproveClean}
-            className="bg-[#166534] hover:bg-[#14532D] text-white text-xs font-semibold px-5 py-2.5 rounded-[4px] shadow-xs flex items-center gap-2 transition-colors cursor-pointer"
-          >
-            <CheckCircle className="w-4 h-4" />
-            <span>Approve Clean &amp; Clear for Disbursement</span>
-          </button>
-        </div>
+            <p className="font-mono text-[10px] text-[#64748B] text-center mt-1.5">
+              Generates formal corporate credit memo with contract references and dispatch log.
+            </p>
+          </div>
+        </>
       )}
     </div>
   );

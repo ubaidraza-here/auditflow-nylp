@@ -1,99 +1,108 @@
 import React from 'react';
-import TabularCurrency from '../../components/common/TabularCurrency';
 
-export default function LineItemReconcileTable({ invoice, po }) {
-  const lineItems = invoice?.line_items || [];
-  const poBaselineTotal = invoice?.po_baseline_grand_total || po?.grand_total || 2500.00;
-  const billedTotal = invoice?.grand_total || 2950.00;
-  const varianceTotal = invoice?.total_variance_amount || (billedTotal - poBaselineTotal);
+export default function LineItemReconcileTable({ comparisons = [], matchedPo, invoiceNumber = 'INV-9042' }) {
+  const formatUsd = (num) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num || 0);
+
+  const poNumber = matchedPo?.po_number || 'PO-2026-102';
+  const authorizedTotal = matchedPo?.authorized_total || 2500.0;
+  const billedTotal = comparisons.reduce((sum, c) => sum + (c.invoice_line_total || 0), 0) || 2950.0;
+  const leakageTotal = comparisons.reduce((sum, c) => sum + (c.variance_amount || 0), 0) || Math.max(0, billedTotal - authorizedTotal);
 
   return (
-    <div className="bg-white border border-[#E2E8F0] rounded-[6px] shadow-xs overflow-hidden mb-4">
-      <div className="bg-[#F8FAFC] border-b border-[#E2E8F0] px-4 py-3 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <span className="font-mono text-xs font-bold text-[#0A2540] uppercase tracking-wider">
-            3-Way Line Item Reconciliation Matrix
-          </span>
-          <span className="text-[10px] font-mono text-[#64748B] bg-white border border-[#E2E8F0] px-1.5 py-0.5 rounded">
-            PO: {invoice?.po_reference || 'PO-2026-102'}
-          </span>
-        </div>
-        <span className="text-xs text-[#64748B]">Deterministic Unit-Price Tolerance: ±$0.02</span>
+    <div className="w-full">
+      <div className="flex items-center justify-between mb-2 pb-1 border-b border-[#E2E8F0]">
+        <span className="font-sans text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500">
+          3-Way Reconciliation Matrix: {poNumber} vs {invoiceNumber}
+        </span>
+        <span className="font-sans text-[11px] text-[#64748B]">
+          ERP Status: Baseline Linked
+        </span>
       </div>
 
-      <div className="w-full overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left border-collapse text-xs">
+      <div className="border border-[#E2E8F0] rounded-lg overflow-x-auto bg-white shadow-card">
+        <table className="w-full text-left border-collapse text-xs">
           <thead>
-            <tr className="bg-[#F1F5F9] border-b border-[#E2E8F0] text-[11px] font-mono text-[#475569] uppercase font-semibold whitespace-nowrap">
-              <th className="py-2.5 px-3">Line &amp; Description</th>
-              <th className="py-2.5 px-3">PO Mapping</th>
-              <th className="py-2.5 px-3 text-right">Qty</th>
+            <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0] font-sans text-[11px] font-semibold uppercase tracking-[0.06em] text-slate-500 select-none">
+              <th className="py-2.5 px-3.5">Line Item &amp; PO Mapping</th>
+              <th className="py-2.5 px-3 text-center">Qty (PO vs Inv)</th>
               <th className="py-2.5 px-3 text-right">Unit Rate (PO vs Inv)</th>
-              <th className="py-2.5 px-3 text-right">Line Total</th>
-              <th className="py-2.5 px-3 text-right">Variance</th>
-              <th className="py-2.5 px-3 text-center">Verdict</th>
+              <th className="py-2.5 px-3 text-right">Net Variance</th>
+              <th className="py-2.5 px-3.5 text-right">Verdict</th>
             </tr>
           </thead>
-          <tbody>
-            {lineItems.map((item, idx) => {
-              const poLine = (po?.lines || []).find(l => l.id === item.matched_po_line_id);
-              const poRate = poLine?.rate;
-              const hasRateOverrun = poRate && item.unit_price > poRate + 0.005;
-              const isUnapproved = !item.matched_po_line_id;
-              const lineVariance = isUnapproved ? item.line_total : (hasRateOverrun ? (item.unit_price - poRate) * item.quantity : 0);
+          <tbody className="divide-y divide-[#F1F5F9] text-xs">
+            {comparisons.map((item, idx) => {
+              const isMatch = item.line_status === 'MATCH';
+              const isOvercharge = item.line_status === 'OVERCHARGE';
+              const isUnapproved = item.line_status === 'UNAPPROVED_ITEM';
+              const isDup = item.line_status === 'DUPLICATE';
 
               return (
-                <tr key={idx} className="border-b border-[#F1F5F9] hover:bg-[#F8FAFC] transition-colors">
-                  <td className="py-2.5 px-3 font-medium text-[#0A2540]">
-                    <span className="font-mono text-[#64748B] mr-1.5">{item.line_number < 10 ? `0${item.line_number}` : item.line_number}.</span>
-                    {item.description}
+                <tr key={item.line_number || idx} className="hover:bg-[#F8FAFC] transition-colors">
+                  <td className="py-3 px-3.5">
+                    <div className="font-sans text-xs font-semibold text-[#0A2540]">{item.invoice_description}</div>
+                    <div className="text-[10px] text-[#64748B]">
+                      {item.matched_po_description
+                        ? <span>PO Line 0{item.line_number} • {item.matched_po_description}</span>
+                        : <span className="text-[#92400E] font-semibold font-mono">[Not on {poNumber}]</span>}
+                    </div>
                   </td>
-                  <td className="py-2.5 px-3 font-mono text-[11px]">
-                    {item.matched_po_line_id ? (
-                      <span className="text-[#0A2540] bg-[#F1F5F9] px-1.5 py-0.5 rounded border border-[#E2E8F0]">
-                        {item.matched_po_line_id}
-                      </span>
+
+                  <td className="py-3 px-3 text-center font-sans tabular-nums font-semibold text-[#0A2540]">
+                    {item.po_quantity === item.invoice_quantity
+                      ? `${item.po_quantity} = ${item.invoice_quantity}`
+                      : `${item.po_quantity} → ${item.invoice_quantity}`}
+                  </td>
+
+                  <td className="py-3 px-3 text-right whitespace-nowrap font-sans tabular-nums">
+                    {item.po_unit_price !== item.invoice_unit_price ? (
+                      <>
+                        <span className="line-through text-slate-400 mr-1.5 font-normal">
+                          {formatUsd(item.po_unit_price)}
+                        </span>
+                        <span className="text-[#9F1239] font-semibold tracking-tight">
+                          {formatUsd(item.invoice_unit_price)}
+                        </span>
+                      </>
                     ) : (
-                      <span className="text-[#991B1B] bg-[#FEF2F2] px-1.5 py-0.5 rounded border border-[#FECACA]">
-                        UNCONTRACTED
+                      <span className="text-[#166534] font-medium">
+                        {formatUsd(item.invoice_unit_price)}
                       </span>
                     )}
                   </td>
-                  <td className="py-2.5 px-3 text-right font-mono tabular-nums text-[#475569]">
-                    {item.quantity.toFixed(1)}
-                  </td>
-                  <td className="py-2.5 px-3 text-right font-mono tabular-nums">
-                    {poRate && hasRateOverrun ? (
-                      <span>
-                        <del className="text-[#94A3B8] mr-1">${poRate.toFixed(2)}</del>
-                        <span className="font-semibold text-[#991B1B]">${item.unit_price.toFixed(2)}</span>
-                      </span>
+
+                  <td className="py-3 px-3 text-right font-sans tabular-nums font-semibold whitespace-nowrap">
+                    {item.variance_amount > 0 ? (
+                      <span className="text-[#9F1239] tracking-tight">+{formatUsd(item.variance_amount)}</span>
                     ) : (
-                      <span className="text-[#0A2540]">${item.unit_price.toFixed(2)}</span>
+                      <span className="text-[#166534] font-medium">$0.00</span>
                     )}
                   </td>
-                  <td className="py-2.5 px-3 text-right font-mono tabular-nums text-[#0A2540]">
-                    ${item.line_total.toFixed(2)}
-                  </td>
-                  <td className="py-2.5 px-3 text-right font-mono tabular-nums">
-                    {lineVariance > 0.005 ? (
-                      <span className="text-[#991B1B] font-bold">+${lineVariance.toFixed(2)}</span>
-                    ) : (
-                      <span className="text-[#166534]">$0.00</span>
+
+                  <td className="py-3 px-3.5 text-right whitespace-nowrap">
+                    {isMatch && (
+                      <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#F0FDF4] text-[#166534] border-[#BBF7D0]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#16A34A]" />
+                        <span>Exact Match</span>
+                      </span>
                     )}
-                  </td>
-                  <td className="py-2.5 px-3 text-center">
-                    {isUnapproved ? (
-                      <span className="bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA] text-[10px] font-mono px-1.5 py-0.5 rounded-[4px] font-semibold">
-                        UNAPPROVED
+                    {isOvercharge && (
+                      <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#FEF2F2] text-[#991B1B] border-[#FECACA]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#DC2626]" />
+                        <span>Overcharge</span>
                       </span>
-                    ) : hasRateOverrun ? (
-                      <span className="bg-[#FEF2F2] text-[#991B1B] border border-[#FECACA] text-[10px] font-mono px-1.5 py-0.5 rounded-[4px] font-semibold">
-                        OVERCHARGE
+                    )}
+                    {isUnapproved && (
+                      <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#FFFBEB] text-[#92400E] border-[#FDE68A]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#D97706]" />
+                        <span>Unapproved</span>
                       </span>
-                    ) : (
-                      <span className="bg-[#F0FDF4] text-[#166534] border border-[#BBF7D0] text-[10px] font-mono px-1.5 py-0.5 rounded-[4px] font-semibold">
-                        CLEARED
+                    )}
+                    {isDup && (
+                      <span className="rounded-[4px] px-2 py-0.5 text-[11px] font-sans font-medium tracking-tight inline-flex items-center gap-1.5 border bg-[#FEF2F2] text-[#991B1B] border-[#FECACA]">
+                        <span className="w-1.5 h-1.5 rounded-full bg-[#DC2626]" />
+                        <span>Duplicate</span>
                       </span>
                     )}
                   </td>
@@ -101,29 +110,27 @@ export default function LineItemReconcileTable({ invoice, po }) {
               );
             })}
           </tbody>
-        </table>
-      </div>
 
-      {/* 3-Column Reconciliation Summary Footer */}
-      <div className="bg-[#F8FAFC] border-t border-[#E2E8F0] p-4 grid grid-cols-3 gap-4 text-center">
-        <div className="bg-white border border-[#E2E8F0] rounded-[4px] p-2.5">
-          <div className="text-[10px] font-mono text-[#64748B] uppercase">Authorized PO Contract</div>
-          <div className="text-base font-bold text-[#0A2540] mt-0.5">
-            <TabularCurrency amount={poBaselineTotal} />
-          </div>
-        </div>
-        <div className="bg-white border border-[#E2E8F0] rounded-[4px] p-2.5">
-          <div className="text-[10px] font-mono text-[#64748B] uppercase">Billed Invoice Total</div>
-          <div className="text-base font-bold text-[#0A2540] mt-0.5">
-            <TabularCurrency amount={billedTotal} />
-          </div>
-        </div>
-        <div className="bg-[#FEF2F2] border border-[#FECACA] rounded-[4px] p-2.5">
-          <div className="text-[10px] font-mono text-[#991B1B] uppercase font-semibold">Preventable Capital Leakage</div>
-          <div className="text-base font-bold text-[#991B1B] mt-0.5">
-            <TabularCurrency amount={varianceTotal} isDelta={varianceTotal > 0} />
-          </div>
-        </div>
+          {/* Calm Summary Footer */}
+          <tfoot>
+            <tr className="bg-[#F8FAFC] border-t border-[#E2E8F0] font-sans text-xs">
+              <td className="py-3 px-3.5" colSpan={2}>
+                <span className="text-[#64748B] text-[10px] uppercase block font-semibold">Authorized PO Total:</span>
+                <span className="font-sans tabular-nums text-sm font-semibold text-[#0A2540]">{formatUsd(authorizedTotal)}</span>
+              </td>
+              <td className="py-3 px-3 text-right">
+                <span className="text-[#64748B] text-[10px] uppercase block font-semibold">Billed Inv Total:</span>
+                <span className="font-sans tabular-nums text-sm font-semibold text-[#0A2540]">{formatUsd(billedTotal)}</span>
+              </td>
+              <td className="py-3 px-3.5 text-right" colSpan={2}>
+                <span className="text-[#9F1239] uppercase text-[10px] block font-semibold">Preventable Capital Leakage:</span>
+                <span className="font-sans tabular-nums text-sm font-semibold text-[#9F1239]">
+                  {leakageTotal > 0 ? `+${formatUsd(leakageTotal)}` : '$0.00'}
+                </span>
+              </td>
+            </tr>
+          </tfoot>
+        </table>
       </div>
     </div>
   );

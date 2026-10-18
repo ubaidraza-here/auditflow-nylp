@@ -1,170 +1,196 @@
-import { INITIAL_INVOICES, INITIAL_PURCHASE_ORDERS, INITIAL_AUDIT_LOGS } from './mockData.js';
+import {
+  MOCK_KPIS,
+  MOCK_INVOICES,
+  MOCK_PURCHASE_ORDERS,
+  MOCK_AUDIT_LOGS,
+  getInitialMockInvoices,
+} from './mockData.js';
 
-const API_BASE = 'http://localhost:5000/api';
+const API_BASE_URL = 'http://localhost:5000/api';
 
-const getStored = (k, d) => {
-  try { const s = sessionStorage.getItem(k); if (s) return JSON.parse(s); } catch {}
-  return JSON.parse(JSON.stringify(d));
-};
-const setStored = (k, v) => { try { sessionStorage.setItem(k, JSON.stringify(v)); } catch {} };
+let localInvoices = [...MOCK_INVOICES];
+let localKpis = { ...MOCK_KPIS };
+let localLogs = [...MOCK_AUDIT_LOGS];
 
-let memoryInvoices = getStored('auditflow_live_invoices', INITIAL_INVOICES);
-let memoryPOs = JSON.parse(JSON.stringify(INITIAL_PURCHASE_ORDERS));
-let memoryLogs = getStored('auditflow_live_audit_logs', INITIAL_AUDIT_LOGS);
-const saveInvoices = (i) => { memoryInvoices = i; setStored('auditflow_live_invoices', i); };
-const saveLogs = (l) => { memoryLogs = l; setStored('auditflow_live_audit_logs', l); };
-
-async function computeFileSha256(file) {
-  const buf = await file.arrayBuffer();
-  const hash = await crypto.subtle.digest('SHA-256', buf);
-  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
-}
-
-function calculateKpis(invs) {
-  const totalVol = invs.reduce((acc, i) => acc + (i.grand_total || 0), 0);
-  const leakage = invs.reduce((acc, i) => acc + (i.total_variance_amount || 0), 0);
-  const pending = invs.filter(i => i.status === 'EXCEPTION_FLAGGED').length;
-  const verified = invs.filter(i => ['VERIFIED_MATCH', 'APPROVED_CLEAN'].includes(i.status)).length;
-  return {
-    total_audited_volume: totalVol,
-    prevented_leakage_amount: leakage,
-    pending_exceptions_count: pending,
-    clean_match_rate_percent: invs.length ? parseFloat(((verified / invs.length) * 100).toFixed(1)) : 75.0,
-    total_records: invs.length
-  };
-}
-
-async function request(endpoint, options = {}, timeoutMs = 15000) {
-  const c = new AbortController();
-  const t = setTimeout(() => c.abort(), timeoutMs);
+async function request(endpoint, options = {}, fallbackData) {
   try {
-    const res = await fetch(`${API_BASE}${endpoint}`, { ...options, signal: c.signal });
-    clearTimeout(t);
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 2500);
+    const res = await fetch(`${API_BASE_URL}${endpoint}`, {
+      ...options,
+      headers: { 'Content-Type': 'application/json', ...(options.headers || {}) },
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     return await res.json();
-  } catch { clearTimeout(t); return null; }
+  } catch {
+    return typeof fallbackData === 'function' ? fallbackData() : fallbackData;
+  }
 }
 
 export const apiClient = {
-  computeFileSha256,
-  async getHealth() {
-    return (await request('/health')) || { status: 'healthy', gemini_configured: true, extraction_model: 'gemini-3.5-flash', fallback: true };
+  async computeFileSha256(file) {
+    try {
+      const buffer = await file.arrayBuffer();
+      const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+      return Array.from(new Uint8Array(hashBuffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    } catch {
+      return 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855';
+    }
   },
-  async getDashboardSummary() {
-    return (await request('/dashboard/summary')) || { kpis: calculateKpis(memoryInvoices), invoices: [...memoryInvoices] };
-  },
-  async getInvoice(idOrNumber) {
-    const res = await request(`/invoices/${idOrNumber}`);
-    if (res) return res;
-    const clean = String(idOrNumber).toLowerCase().trim();
-    return memoryInvoices.find(i => i.id.toLowerCase() === clean || i.invoice_number.toLowerCase() === clean) || null;
-  },
+
   async uploadInvoiceFile(file) {
-    const clientHash = await computeFileSha256(file);
+    const sha256 = await this.computeFileSha256(file);
     const formData = new FormData();
     formData.append('file', file);
-    formData.append('client_sha256', clientHash);
-    const res = await request('/invoices/analyze', { method: 'POST', body: formData }, 60000);
 
-    let target = res?.invoice;
-    if (!target) {
-      const name = (file.name || '').toUpperCase();
-      const isClean = name.includes('8801') || name.includes('CLEAN') || name.includes('CLOUD');
-      const isDupe = name.includes('7710') || name.includes('PRIME') || name.includes('DUPE');
-      target = JSON.parse(JSON.stringify(INITIAL_INVOICES[isClean ? 1 : (isDupe ? 2 : 0)]));
-      const cleanName = file.name.replace(/\.[^/.]+$/, '').toUpperCase();
-      target.id = `inv_${Date.now()}`;
-      target.invoice_number = cleanName.startsWith('INV-') ? cleanName : `INV-${cleanName.slice(0, 10)}`;
-      target.file_name = file.name;
-    }
-    target.sha256_hash = clientHash;
-    target.file_hash_sha256 = clientHash;
-    target.upload_timestamp = new Date().toISOString();
-
-    const existingIdx = memoryInvoices.findIndex(i => i.id === target.id || i.invoice_number === target.invoice_number);
-    if (existingIdx >= 0) memoryInvoices.splice(existingIdx, 1);
-    memoryInvoices.unshift(target);
-    saveInvoices([...memoryInvoices]);
-
-    const isEx = target.status === 'EXCEPTION_FLAGGED';
-    memoryLogs.unshift({
-      id: `log_${Date.now()}`, timestamp: new Date().toISOString(), invoice_id: target.id,
-      invoice_number: target.invoice_number, event_type: isEx ? 'EXCEPTION_DETECTED' : 'INTAKE_VERIFIED',
-      actor: 'Gemini 3.5 Flash Vision', details: isEx ? `Flagged with ${target.triggered_rules_count || 1} discrepancies.` : 'Clean match verified.'
-    });
-    saveLogs([...memoryLogs]);
-
-    return {
-      success: true,
-      stage_telemetry: { stage1_sha256: clientHash, stage2_model_used: 'gemini-3.5-flash', stage3_violations_found: target.triggered_rules_count || 0 },
-      invoice: target
-    };
-  },
-  async analyzeDemoScenario(scenarioId) {
-    const res = await request('/invoices/analyze', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ demo_scenario_id: scenarioId })
-    });
-    let target = res?.invoice;
-    if (!target) {
-      if (scenarioId === 'SCENARIO_A_CLEAN') target = INITIAL_INVOICES.find(i => i.id === 'inv_1001');
-      else if (scenarioId === 'SCENARIO_C_DUPLICATE') target = INITIAL_INVOICES.find(i => i.id === 'inv_1003');
-      else target = INITIAL_INVOICES.find(i => i.id === 'inv_1002');
-      target = JSON.parse(JSON.stringify(target));
-    }
-    const idx = memoryInvoices.findIndex(i => i.id === target.id);
-    if (idx >= 0) memoryInvoices.splice(idx, 1);
-    memoryInvoices.unshift(target);
-    saveInvoices([...memoryInvoices]);
-
-    return {
-      success: true,
-      stage_telemetry: { stage1_sha256: target.sha256_hash, stage2_model_used: 'gemini-3.5-flash', stage3_violations: target.triggered_rules_count },
-      invoice: target
-    };
-  },
-  async submitDecision(invoiceId, { decision, reviewer_name, override_reason, dispute_email_body }) {
-    const res = await request(`/invoices/${invoiceId}/decision`, {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ decision, reviewer_name, override_reason, dispute_email_body })
-    });
-    if (res) return res;
-    const inv = memoryInvoices.find(i => i.id === invoiceId || i.invoice_number === invoiceId);
-    if (inv) {
-      if (decision === 'APPROVE_CLEAN') inv.status = 'APPROVED_CLEAN';
-      if (decision === 'APPROVE_WITH_OVERRIDE') { inv.status = 'APPROVED_WITH_OVERRIDE'; inv.override_reason = override_reason; }
-      if (decision === 'REJECT_DISPUTE') { inv.status = 'REJECTED_DISPUTED'; inv.dispute_memo = dispute_email_body; }
-      inv.reviewer_name = reviewer_name || 'Ubaid Raza';
-      inv.reviewed_at = new Date().toISOString();
-      saveInvoices([...memoryInvoices]);
-      memoryLogs.unshift({
-        id: `log_${Date.now()}`, timestamp: new Date().toISOString(), invoice_id: inv.id,
-        invoice_number: inv.invoice_number, event_type: decision, actor: inv.reviewer_name,
-        details: override_reason || dispute_email_body || 'Status updated.'
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+      const res = await fetch(`${API_BASE_URL}/invoices/analyze`, {
+        method: 'POST',
+        body: formData,
+        signal: controller.signal,
       });
-      saveLogs([...memoryLogs]);
+      clearTimeout(timeoutId);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      const invoice = data.invoice || data;
+      if (invoice?.invoice_id) {
+        const idx = localInvoices.findIndex((i) => i.invoice_id === invoice.invoice_id);
+        if (idx !== -1) localInvoices[idx] = invoice;
+        else localInvoices = [invoice, ...localInvoices];
+      }
+      return { success: true, invoice, sha256 };
+    } catch (err) {
+      console.warn('Live API upload failed, falling back to simulation:', err);
+      return this._simulateFileUpload(file, sha256);
     }
-    return { success: true, invoice: inv };
   },
-  async resetLedger() {
-    sessionStorage.removeItem('auditflow_live_invoices');
-    sessionStorage.removeItem('auditflow_live_audit_logs');
-    memoryInvoices = JSON.parse(JSON.stringify(INITIAL_INVOICES));
-    memoryPOs = JSON.parse(JSON.stringify(INITIAL_PURCHASE_ORDERS));
-    memoryLogs = JSON.parse(JSON.stringify(INITIAL_AUDIT_LOGS));
-    saveInvoices(memoryInvoices);
-    saveLogs(memoryLogs);
-    await request('/invoices/reset', { method: 'POST' });
-    return { status: 'ledger_reseeded', invoices_count: memoryInvoices.length };
-  },
-  async resetAllDemoData() { return this.resetLedger(); },
-  async resetInvoice(invoiceId) {
-    const orig = INITIAL_INVOICES.find(i => i.id === invoiceId);
-    if (orig) {
-      const idx = memoryInvoices.findIndex(i => i.id === invoiceId);
-      if (idx >= 0) { memoryInvoices[idx] = JSON.parse(JSON.stringify(orig)); saveInvoices([...memoryInvoices]); }
+
+  _simulateFileUpload(file, sha256) {
+    const fn = (file.name || '').toLowerCase();
+    const blueprint = getInitialMockInvoices();
+    const isExactDup = localInvoices.some((inv) => inv.file_hash_sha256 === sha256);
+
+    let targetNum = 'INV-9042';
+    if (!isExactDup && (fn.includes('clean') || fn.includes('8801') || fn.includes('cloudhost'))) {
+      targetNum = 'INV-8801';
+    } else if (isExactDup || fn.includes('dup') || fn.includes('7710') || fn.includes('prime')) {
+      targetNum = 'INV-7710-REV';
     }
-    return { success: true };
+
+    const base = blueprint.find((i) => i.invoice_number === targetNum) || blueprint[0];
+    const newInv = JSON.parse(JSON.stringify(base));
+    newInv.invoice_id = `inv_${Date.now()}`;
+    newInv.file_name = file.name;
+    newInv.file_hash_sha256 = sha256;
+    newInv.file_url = URL.createObjectURL(file);
+    newInv.extraction_mode = 'FALLBACK_SIMULATION';
+    delete newInv.decision_metadata;
+
+    if (isExactDup) {
+      newInv.status = 'EXCEPTION_FLAGGED';
+      const exactDupFlag = {
+        flag_id: `flag_exact_${Date.now()}`,
+        rule_code: 'EXACT_FILE_DUPLICATE',
+        severity: 'CRITICAL',
+        title: 'Exact Cryptographic File Duplicate Detected',
+        explanation: `File SHA-256 hash (${sha256.slice(0, 16)}...) matches an existing invoice. Identical file previously ingested.`,
+        financial_impact: newInv.grand_total,
+      };
+      newInv.discrepancies = [exactDupFlag, ...(newInv.discrepancies || [])];
+      newInv.discrepancy_count = newInv.discrepancies.length;
+      newInv.flag_reason = 'Critical: Exact Cryptographic Duplicate File Upload';
+    }
+
+    localInvoices = [newInv, ...localInvoices];
+    return { success: true, invoice: newInv, sha256 };
   },
-  async getPurchaseOrders() { return (await request('/purchase-orders')) || [...memoryPOs]; },
-  async getAuditLogs() { return (await request('/audit-logs')) || [...memoryLogs]; }
+
+  async getDashboardSummary() {
+    return request('/dashboard/summary', {}, () => ({
+      kpis: { ...localKpis },
+      invoices: [...localInvoices],
+    }));
+  },
+
+  async getPurchaseOrders() {
+    return request('/purchase-orders', {}, () => [...MOCK_PURCHASE_ORDERS]);
+  },
+
+  async getAuditLogs() {
+    return request('/audit-logs', {}, () => [...localLogs]);
+  },
+
+  async getInvoiceById(id) {
+    return request(`/invoices/${id}`, {}, () => {
+      const match = localInvoices.find((i) => i.invoice_id === id || i.invoice_number === id);
+      return match || localInvoices.find((i) => i.invoice_id === 'inv_1002') || localInvoices[0];
+    });
+  },
+
+  async submitDecision(invoiceId, { decision, reviewer_name, justification_notes }) {
+    return request(
+      `/invoices/${invoiceId}/decision`,
+      { method: 'POST', body: JSON.stringify({ decision, reviewer_name, justification_notes }) },
+      () => {
+        const existing = localInvoices.find((i) => i.invoice_id === invoiceId || i.invoice_number === invoiceId);
+        if (!existing) return { success: false };
+        let nextStatus = 'APPROVED_CLEAN';
+        if (decision === 'REJECT_DISPUTE') nextStatus = 'REJECTED_DISPUTED';
+        else if (decision === 'APPROVE_WITH_OVERRIDE') nextStatus = 'APPROVED_WITH_OVERRIDE';
+        const timestamp = new Date().toISOString();
+        const reviewer = reviewer_name || 'Ubaid Raza (Senior AP Auditor)';
+        const notes = justification_notes || 'Approved/disputed by compliance auditor.';
+        const updated = {
+          ...existing,
+          status: nextStatus,
+          decision_metadata: { timestamp, reviewer_name: reviewer, justification_notes: notes, decision_type: decision },
+        };
+        localInvoices = localInvoices.map((inv) => (inv.invoice_id === existing.invoice_id ? updated : inv));
+        return { success: true, invoice_id: updated.invoice_id, new_status: nextStatus, updated_invoice: updated };
+      }
+    );
+  },
+
+  async resetInvoiceState(invoiceId) {
+    const blueprint = getInitialMockInvoices();
+    const original = blueprint.find((i) => i.invoice_id === invoiceId || i.invoice_number === invoiceId) || blueprint[0];
+    const fresh = JSON.parse(JSON.stringify(original));
+    delete fresh.decision_metadata;
+    localInvoices = localInvoices.map((inv) => (inv.invoice_id === fresh.invoice_id ? fresh : inv));
+    return fresh;
+  },
+
+  async triggerDemoScenario(scenarioId) {
+    return request(
+      '/invoices/analyze',
+      { method: 'POST', body: JSON.stringify({ demo_scenario_id: scenarioId }) },
+      () => {
+        const blueprint = getInitialMockInvoices();
+        let targetNum = 'INV-8801';
+        if (scenarioId === 'SCENARIO_B_OVERCHARGE') targetNum = 'INV-9042';
+        else if (scenarioId === 'SCENARIO_C_DUPLICATE') targetNum = 'INV-7710-REV';
+        const fresh = JSON.parse(JSON.stringify(blueprint.find((i) => i.invoice_number === targetNum) || blueprint[0]));
+        delete fresh.decision_metadata;
+        const idx = localInvoices.findIndex((i) => i.invoice_id === fresh.invoice_id);
+        if (idx !== -1) localInvoices[idx] = fresh;
+        else localInvoices = [fresh, ...localInvoices];
+        return { success: true, invoice: fresh };
+      }
+    );
+  },
+
+  async resetAll() {
+    return request('/invoices/reset', { method: 'POST' }, () => {
+      localInvoices = getInitialMockInvoices();
+      localKpis = { ...MOCK_KPIS };
+      localLogs = [...MOCK_AUDIT_LOGS];
+      return { success: true, message: 'All demo invoices and audit logs reset.' };
+    });
+  },
 };

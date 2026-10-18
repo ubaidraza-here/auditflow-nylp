@@ -1,145 +1,147 @@
 import React, { useState } from 'react';
-import { ZoomIn, ZoomOut, Maximize2, Eye } from 'lucide-react';
 
-export default function DocumentEvidencePane({ invoice }) {
-  const [zoom, setZoom] = useState(1);
-  const [showOverlays, setShowOverlays] = useState(true);
+export default function DocumentEvidencePane({ invoice, highlightDiscrepancies, onToggleHighlight }) {
+  const [zoom, setZoom] = useState(100);
+  const ext = invoice?.extracted_data || {};
+  const items = invoice?.line_item_comparisons || [];
+  const confidence = ((invoice?.extraction_confidence || 0.96) * 100).toFixed(1);
 
-  const isDisputed = invoice?.status === 'REJECTED_DISPUTED';
-  const isApproved = invoice?.status === 'APPROVED_CLEAN';
-  const isOverride = invoice?.status === 'APPROVED_WITH_OVERRIDE';
-  const hasVariance = showOverlays && (invoice?.total_variance_amount || 0) > 0;
+  const isRejected = invoice?.status === 'REJECTED_DISPUTED';
+  const isApproved =
+    invoice?.status === 'APPROVED_CLEAN' || invoice?.status === 'APPROVED_WITH_OVERRIDE';
+
+  const formatUsd = (num) =>
+    new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' }).format(num || 0);
 
   return (
-    <div className="bg-[#EDF1F5] border border-[#E2E8F0] rounded-[6px] shadow-xs flex flex-col h-full overflow-hidden">
-      {/* Evidence Toolbar */}
-      <div className="bg-white border-b border-[#E2E8F0] px-4 py-2.5 flex items-center justify-between text-xs">
+    <section className="bg-white border border-[#E2E8F0] rounded-lg shadow-card overflow-hidden flex flex-col">
+      {/* Top Floating Inspection Controls */}
+      <div className="w-full bg-[#F8FAFC] border-b border-[#E2E8F0] px-4 py-2.5 flex items-center justify-between font-sans text-xs text-[#64748B]">
         <div className="flex items-center gap-1.5">
-          <button onClick={() => setZoom(z => Math.max(0.85, z - 0.1))} className="p-1 rounded border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#64748B]" title="Zoom Out">
-            <ZoomOut className="w-3.5 h-3.5" />
-          </button>
-          <span className="font-mono text-[11px] text-[#0A2540] font-semibold w-10 text-center">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom(z => Math.min(1.25, z + 0.1))} className="p-1 rounded border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#64748B]" title="Zoom In">
-            <ZoomIn className="w-3.5 h-3.5" />
-          </button>
-          <button onClick={() => setZoom(1)} className="p-1 rounded border border-[#E2E8F0] hover:bg-[#F8FAFC] text-[#64748B] ml-1" title="Reset Zoom">
-            <Maximize2 className="w-3.5 h-3.5" />
-          </button>
+          <div className="inline-flex items-center border border-[#CBD5E1] rounded bg-white overflow-hidden shadow-xs">
+            <button type="button" onClick={() => setZoom((z) => Math.max(70, z - 15))} className="px-2 py-0.5 hover:bg-[#F1F5F9] text-[#0A2540] font-bold cursor-pointer">−</button>
+            <span className="px-2 py-0.5 text-[#0A2540] font-sans tabular-nums font-semibold border-x border-[#E2E8F0] text-[11px]">{zoom}%</span>
+            <button type="button" onClick={() => setZoom((z) => Math.min(130, z + 15))} className="px-2 py-0.5 hover:bg-[#F1F5F9] text-[#0A2540] font-bold cursor-pointer">+</button>
+          </div>
+          <button type="button" onClick={() => setZoom(100)} className="px-2.5 py-0.5 border border-[#CBD5E1] rounded bg-white hover:bg-[#F1F5F9] text-[#475569] text-[11px] font-sans transition-colors cursor-pointer shadow-xs">Fit Page</button>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <button
-            onClick={() => setShowOverlays(!showOverlays)}
-            className={`px-2 py-1 rounded-[4px] border text-[11px] font-mono flex items-center gap-1.5 transition-colors ${
-              showOverlays ? 'bg-[#0A2540] text-white border-[#0A2540]' : 'bg-white text-[#64748B] border-[#E2E8F0]'
+            type="button"
+            onClick={onToggleHighlight}
+            className={`flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-semibold font-sans cursor-pointer transition-all shadow-xs border ${
+              highlightDiscrepancies
+                ? 'text-[#065F46] bg-[#ECFDF5] border-[#A7F3D0]'
+                : 'text-[#64748B] bg-white border-[#CBD5E1]'
             }`}
           >
-            <Eye className="w-3 h-3" />
-            <span>Overlays: {showOverlays ? 'ACTIVE' : 'OFF'}</span>
+            <span className="material-symbols-outlined text-[14px]">{highlightDiscrepancies ? 'check_circle' : 'visibility'}</span>
+            <span>Overlays: {highlightDiscrepancies ? 'Active' : 'Off'}</span>
           </button>
-          <div className="hidden sm:flex items-center gap-1 font-mono text-[10px] text-[#065F46] bg-[#ECFDF5] border border-[#A7F3D0] px-2 py-0.5 rounded-[4px]">
-            <span className="w-1.5 h-1.5 rounded-full bg-[#059669]" />
-            <span>98.4% Confidence (Gemini 3.5 Flash)</span>
+          <div className="hidden sm:flex items-center gap-1.5 text-[11px] font-sans">
+            <span>OCR:</span>
+            <strong className="text-[#0A2540] font-sans tabular-nums font-semibold">{confidence}%</strong>
+            <div className="w-10 h-1.5 bg-[#E2E8F0] rounded-full overflow-hidden">
+              <div className="h-full bg-[#059669]" style={{ width: `${confidence}%` }} />
+            </div>
           </div>
         </div>
       </div>
 
-      {/* Canvas Viewport */}
-      <div className="p-6 flex-1 overflow-auto flex items-center justify-center relative min-h-[560px]">
-        <div
-          style={{ transform: `scale(${zoom})`, transformOrigin: 'top center' }}
-          className="w-full max-w-[490px] bg-white border border-[#CBD5E1] p-6 shadow-md rounded-[2px] relative text-[#0A2540] transition-transform"
+      {/* Soft Architectural Canvas */}
+      <div className="bg-[#EDF1F5] border-y border-[#E2E8F0] p-4 md:p-6 flex justify-center items-start overflow-y-auto max-h-[620px] relative">
+        <article
+          style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center' }}
+          className="w-full max-w-[520px] bg-white rounded-md shadow-md border border-[#CBD5E1] p-6 md:p-7 relative font-sans text-xs text-[#0A2540] flex flex-col gap-4 transition-transform"
         >
-          {/* Angled Verification Stamps */}
-          {isDisputed && <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"><div className="border-4 border-[#991B1B] text-[#991B1B] font-mono font-black text-xl px-6 py-2 rounded-lg -rotate-12 uppercase tracking-widest bg-white/90 shadow-lg">[DISPUTED // PAYMENT ON HOLD]</div></div>}
-          {isApproved && <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"><div className="border-4 border-[#166534] text-[#166534] font-mono font-black text-xl px-6 py-2 rounded-lg -rotate-12 uppercase tracking-widest bg-white/90 shadow-lg">[APPROVED • VERIFIED MATCH]</div></div>}
-          {isOverride && <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20"><div className="border-4 border-[#334155] text-[#334155] font-mono font-black text-xl px-6 py-2 rounded-lg -rotate-12 uppercase tracking-widest bg-white/90 shadow-lg">[AUDIT OVERRIDE • AUTHORIZED]</div></div>}
-
-          {/* Invoice Header */}
-          <div className="border-b border-[#E2E8F0] pb-4 mb-4 flex justify-between items-start">
-            <div>
-              <div className="font-bold text-base tracking-tight text-[#0A2540]">{invoice?.vendor_name || 'Apex Tech Solutions'}</div>
-              <div className="font-mono text-[10px] text-[#64748B]">Tax NTN: {invoice?.vendor_ntn || 'NTN-8839201-4'}</div>
-              <div className="font-mono text-[10px] text-[#64748B]">Billing: {invoice?.vendor_email || 'billing@apextech.com'}</div>
+          {isRejected && (
+            <div className="absolute top-5 right-5 pointer-events-none transform -rotate-12 select-none border-2 border-[#9F1239] px-3 py-1 bg-white/95 text-[#9F1239] font-mono text-[10px] font-bold tracking-wider uppercase shadow-sm z-20 rounded-[4px]">
+              [DISPUTED • PAYMENT ON HOLD]
             </div>
-            <div className="text-right">
-              <div className="font-mono font-bold text-xs text-[#0A2540]">COMMERCIAL TAX INVOICE</div>
-              <div className="font-mono text-[11px] text-[#991B1B] font-bold">#{invoice?.invoice_number}</div>
-              <div className="font-mono text-[10px] text-[#64748B]">Date: {invoice?.invoice_date}</div>
-              <div className="font-mono text-[10px] text-[#0A2540] font-semibold">PO: {invoice?.po_reference}</div>
+          )}
+          {isApproved && (
+            <div className="absolute top-5 right-5 pointer-events-none transform -rotate-12 select-none border-2 border-[#059669] px-3 py-1 bg-white/95 text-[#065F46] font-mono text-[10px] font-bold tracking-wider uppercase shadow-sm z-20 rounded-[4px]">
+              [APPROVED • VERIFIED MATCH]
+            </div>
+          )}
+
+          <div className="border-b border-[#E2E8F0] pb-3">
+            <div className="flex items-center gap-2 mb-1">
+              <span className="material-symbols-outlined text-[18px] text-[#0A2540]">corporate_fare</span>
+              <h2 className="font-sans text-sm font-bold tracking-wide uppercase text-[#0A2540]">
+                {ext.vendor_name || invoice.vendor_name}
+              </h2>
+            </div>
+            <p className="font-mono text-[10px] text-[#64748B] leading-relaxed mb-2">
+              National Tax No: {ext.vendor_tax_id || 'NTN-8839201-4'} • STRN: 3277876123456<br />
+              IBAN: {ext.iban_or_account || 'PK36SCBL00000011223344'} • SWIFT: SCBLPKKA
+            </p>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-2 border-t border-[#F1F5F9] font-mono text-[10px]">
+              <div><span className="text-[#94A3B8] block text-[9px] uppercase">Invoice No</span><strong className="text-[#0A2540]">{invoice.invoice_number}</strong></div>
+              <div><span className="text-[#94A3B8] block text-[9px] uppercase">Date</span><strong className="text-[#0A2540]">{invoice.invoice_date}</strong></div>
+              <div><span className="text-[#94A3B8] block text-[9px] uppercase">PO Ref</span><strong className="text-[#0A2540]">{invoice.po_reference}</strong></div>
+              <div><span className="text-[#94A3B8] block text-[9px] uppercase">Terms</span><strong className="text-[#0A2540]">Net 30</strong></div>
             </div>
           </div>
 
-          {/* Visual Invoice Table with Optical Discrepancy Callouts */}
-          <div className="border border-[#E2E8F0] rounded-[2px] overflow-hidden mb-4 text-[11px]">
-            <div className="grid grid-cols-6 bg-[#F8FAFC] border-b border-[#E2E8F0] p-1.5 font-mono text-[10px] text-[#64748B] font-semibold">
-              <span className="col-span-3">Item Description</span>
-              <span className="text-center">Qty</span>
-              <span className="text-right">Rate</span>
-              <span className="text-right">Total</span>
-            </div>
+          <div className="border border-[#E2E8F0] rounded-md overflow-hidden">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead>
+                <tr className="bg-[#F8FAFC] border-b border-[#E2E8F0] font-sans text-[10px] uppercase font-semibold text-[#64748B]">
+                  <th className="py-2 px-2.5">Item Description</th>
+                  <th className="py-2 px-2 text-right">Qty</th>
+                  <th className="py-2 px-2 text-right">Rate</th>
+                  <th className="py-2 px-2.5 text-right">Total</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#F1F5F9] font-sans text-[11px]">
+                {items.map((it) => {
+                  const isViolation = it.line_status !== 'MATCH' && highlightDiscrepancies;
+                  const isOvercharge = it.variance_amount > 0 && it.line_status !== 'UNAPPROVED_LINE_ITEM';
+                  return (
+                    <tr key={it.line_number} className={isViolation ? (isOvercharge ? 'bg-[#FFF1F2]/60' : 'bg-[#FFFBEB]/60') : ''}>
+                      <td className="py-2 px-2.5 relative">
+                        <span className="font-sans font-semibold text-[#0A2540] block text-xs leading-tight">
+                          {it.invoice_description}
+                        </span>
+                        {isViolation && (
+                          <span className={`inline-block text-[9px] font-sans tabular-nums font-semibold px-1.5 py-0.2 rounded mt-0.5 border ${isOvercharge ? 'bg-[#FFF1F2] text-[#9F1239] border-[#FECDD3]' : 'bg-[#FFFBEB] text-[#92400E] border-[#FDE68A]'}`}>
+                            {isOvercharge ? `+$40/unit vs PO (+${formatUsd(it.variance_amount)})` : `Unapproved Surcharge (+${formatUsd(it.variance_amount)})`}
+                          </span>
+                        )}
+                      </td>
+                      <td className="py-2 px-2 text-right align-top text-[#0A2540] font-sans tabular-nums font-medium">{it.invoice_quantity}</td>
+                      <td className={`py-2 px-2 text-right align-top font-sans tabular-nums font-medium ${isViolation ? 'text-[#9F1239] font-semibold' : 'text-[#64748B]'}`}>{formatUsd(it.invoice_unit_price)}</td>
+                      <td className={`py-2 px-2.5 text-right align-top font-sans tabular-nums font-semibold ${isViolation ? 'text-[#9F1239]' : 'text-[#0A2540]'}`}>{formatUsd(it.invoice_line_total)}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
 
-            {/* Line 1 Callout */}
-            <div className={`p-2 border-b border-[#F1F5F9] relative ${hasVariance ? 'bg-[#FEF2F2] ring-1 ring-[#FECACA]' : ''}`}>
-              <div className="grid grid-cols-6 items-center">
-                <span className="col-span-3 font-medium text-[#0A2540]">27-inch IPS Monitor Panel</span>
-                <span className="text-center font-mono">10.0</span>
-                <span className="text-right font-mono font-bold text-[#991B1B]">$250.00</span>
-                <span className="text-right font-mono">$2,500.00</span>
-              </div>
-              {hasVariance && (
-                <div className="mt-1 font-mono text-[9px] text-[#991B1B] font-semibold flex items-center justify-between">
-                  <span>↳ OPTICAL VARIANCE: +$40.00/unit over PO baseline rate</span>
-                  <span>+$400.00 Overcharge</span>
-                </div>
-              )}
-            </div>
-
-            {/* Line 2 */}
-            <div className="p-2 border-b border-[#F1F5F9] grid grid-cols-6 items-center">
-              <span className="col-span-3 font-medium text-[#0A2540]">USB-C Docking Station</span>
-              <span className="text-center font-mono">5.0</span>
-              <span className="text-right font-mono">$80.00</span>
-              <span className="text-right font-mono">$400.00</span>
-            </div>
-
-            {/* Line 3 Unapproved Callout */}
-            <div className={`p-2 relative ${hasVariance ? 'bg-[#FFFBEB] ring-1 ring-[#FDE68A]' : ''}`}>
-              <div className="grid grid-cols-6 items-center">
-                <span className="col-span-3 font-medium text-[#0A2540]">Rush Delivery &amp; Handling Fee</span>
-                <span className="text-center font-mono">1.0</span>
-                <span className="text-right font-mono font-bold text-[#92400E]">$50.00</span>
-                <span className="text-right font-mono">$50.00</span>
-              </div>
-              {hasVariance && (
-                <div className="mt-1 font-mono text-[9px] text-[#92400E] font-semibold flex items-center justify-between">
-                  <span>↳ UNCONTRACTED SURCHARGE: Absent from PO-2026-102</span>
-                  <span>+$50.00 Unauthorized</span>
-                </div>
-              )}
+          <div className="flex justify-end pt-1">
+            <div className="w-56 space-y-1 font-sans text-xs border-t border-[#E2E8F0] pt-2">
+              <div className="flex justify-between text-[#64748B]"><span>Subtotal:</span><span className="font-sans tabular-nums font-medium">{formatUsd(invoice.grand_total)}</span></div>
+              <div className="flex justify-between text-[#64748B]"><span>Sales Tax (0%):</span><span className="font-sans tabular-nums font-medium">$0.00</span></div>
+              <div className="flex justify-between border-t border-[#0A2540] pt-1 text-[#0A2540] items-baseline font-bold"><span className="text-[11px] uppercase">Total Due:</span><span className="font-sans tabular-nums text-sm font-semibold">{formatUsd(invoice.grand_total)}</span></div>
             </div>
           </div>
 
-          {/* Totals Block */}
-          <div className="flex justify-end mb-4">
-            <div className="w-48 text-[11px] space-y-1 font-mono">
-              <div className="flex justify-between text-[#64748B]"><span>Subtotal:</span><span>${(invoice?.grand_total || 2950).toFixed(2)}</span></div>
-              <div className="flex justify-between font-bold text-xs text-[#0A2540] pt-1 border-t border-[#E2E8F0]">
-                <span>Grand Total:</span><span>${(invoice?.grand_total || 2950).toFixed(2)} USD</span>
-              </div>
-            </div>
+          <div className="border-t border-[#F1F5F9] pt-2 flex items-center justify-between font-mono text-[9px] text-[#94A3B8]">
+            <span>ELECTRONIC TAX INVOICE ARTIFACT</span>
+            <span>ORIGINAL DIGITAL VERIFIED</span>
           </div>
-
-          {/* Cryptographic Proof Strip */}
-          <div className="bg-[#F8FAFC] border border-[#E2E8F0] rounded-[2px] p-2 text-[9px] font-mono text-[#64748B] space-y-0.5">
-            <div className="truncate"><strong>SHA-256:</strong> {invoice?.sha256_hash || 'a4f89d31...'}</div>
-            <div className="flex justify-between">
-              <span><strong>NTN:</strong> {invoice?.vendor_ntn}</span>
-              <span><strong>IBAN:</strong> {invoice?.bank_account_or_iban}</span>
-            </div>
-          </div>
-        </div>
+        </article>
       </div>
-    </div>
+
+      {/* Bottom Pinned Cryptographic & Tax Strip */}
+      <div className="w-full bg-[#F8FAFC] border-t border-[#E2E8F0] grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-[#E2E8F0] text-[10px] font-mono p-2.5 text-[#64748B]">
+        <div className="flex items-center gap-1.5 px-2 py-0.5"><span className="material-symbols-outlined text-[#059669] text-[14px]">verified</span><span>SHA-256:</span><span className="text-[#0A2540] font-bold truncate">{invoice.file_hash_sha256 ? `${invoice.file_hash_sha256.substring(0, 16)}...` : 'e3b0c442...'}</span></div>
+        <div className="flex items-center gap-1.5 px-2 py-0.5"><span className="material-symbols-outlined text-[#64748B] text-[14px]">domain_verification</span><span>Tax Reg:</span><span className="text-[#0A2540] font-semibold">{ext.vendor_tax_id || 'NTN-8839201-4'}</span></div>
+        <div className="flex items-center gap-1.5 px-2 py-0.5"><span className="material-symbols-outlined text-[#64748B] text-[14px]">account_balance</span><span>IBAN:</span><span className="text-[#0A2540] font-semibold">{ext.iban_or_account ? `${ext.iban_or_account.substring(0, 12)}...` : 'PK36 SCBL...'}</span></div>
+      </div>
+    </section>
   );
 }
