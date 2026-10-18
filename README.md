@@ -115,7 +115,7 @@ export GEMINI_API_KEY="your-api-key-here"
 $env:GEMINI_API_KEY="your-api-key-here"
 
 # Start FastAPI Uvicorn Server on port 5000
-python -m uvicorn main:app --host 0.0.0.0 --port 5000 --reload
+python -m uvicorn app.main:app --host 0.0.0.0 --port 5000 --reload
 ```
 *Backend runs at `http://localhost:5000` (API documentation at `http://localhost:5000/docs`).*
 
